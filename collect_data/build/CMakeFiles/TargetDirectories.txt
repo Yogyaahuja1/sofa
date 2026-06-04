@@ -1,0 +1,3 @@
+/home/yogyaahuja/sofa/pinn_project/collect_data/build/CMakeFiles/PINNDataCollector.dir
+/home/yogyaahuja/sofa/pinn_project/collect_data/build/CMakeFiles/edit_cache.dir
+/home/yogyaahuja/sofa/pinn_project/collect_data/build/CMakeFiles/rebuild_cache.dir
