@@ -4,20 +4,18 @@ import numpy as np
 
 
 class LiverPINN(nn.Module):
-    def __init__(self, n_output: int, n_inputs: int = 555):  # ← add n_inputs
+    def __init__(self, n_output: int, n_inputs: int = 543):  # ← add n_inputs
         super().__init__()
         self.n_output = n_output
 
         # Fourier encoding — now maps 90D input
         self.n_fourier = 256
-        self.register_buffer('B', torch.randn(n_inputs, self.n_fourier) * 2.0)
+        self.register_buffer('B', torch.randn(n_inputs, self.n_fourier) * 2)
 
         n_in = 2 * self.n_fourier  # 128
 
         self.net = nn.Sequential(
             nn.Linear(n_in, 512),
-            nn.Tanh(),
-            nn.Linear(512, 512),
             nn.Tanh(),
             nn.Linear(512, 512),
             nn.Tanh(),

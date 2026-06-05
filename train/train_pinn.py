@@ -51,10 +51,13 @@ print(f"Rows after cleaning: {len(df)}")
 print(f"  Rows loaded: {len(df)}")
 print(f"  Columns:     {len(df.columns)}")
 
-# Compute compressed solver features
-force_cols_x = [f'fvx{i}' for i in range(181)]
-force_cols_y = [f'fvy{i}' for i in range(181)]
-force_cols_z = [f'fvz{i}' for i in range(181)]
+# Compute compressed solver features (use actual columns present)
+force_cols_x = sorted(
+    [c for c in df.columns if c.startswith('fvx')],
+    key=lambda c: int(c[3:])
+)
+force_cols_y = [c.replace('fvx', 'fvy', 1) for c in force_cols_x]
+force_cols_z = [c.replace('fvx', 'fvz', 1) for c in force_cols_x]
 vel_cols_y   = [f'vvy{i}' for i in range(181)]
 prev_cols_y  = [f'pdy{i}' for i in range(181)]
 prev_dy_cols = [f'pdy{i}' for i in range(181)]
@@ -81,28 +84,72 @@ print(df['f_total_z'].describe())
 print(df['f_max_mag'].describe())
 print(df['f_n_contact'].describe())
 
-prev_dx_cols = [f'pdx{i}' for i in range(181)]
-prev_dy_cols = [f'pdy{i}' for i in range(181)]
-prev_dz_cols = [f'pdz{i}' for i in range(181)]
+# Pick the most active vertex (skip fixed indices)
+dy_cols = [c for c in df.columns if c.startswith('dy')]
+dy_max = df[dy_cols].abs().max()
+best_vertex_id = None
+for col in dy_max.sort_values(ascending=False).index:
+    vid = int(col[2:])
+    if vid not in FIXED_INDICES:
+        best_vertex_id = vid
+        break
+if best_vertex_id is None:
+    best_vertex_id = 0
+print(f"Most active vertex: {best_vertex_id}")
+
+
+prev_dx_cols = [f'pdx{i}' for i in range(181) if i not in FIXED_INDICES]
+prev_dy_cols = [f'pdy{i}' for i in range(181) if i not in FIXED_INDICES]
+prev_dz_cols = [f'pdz{i}' for i in range(181) if i not in FIXED_INDICES]
+
+
+# df['curr_delta_x'] = df[f'dx{best_vertex_id}'] - df[f'pdx{best_vertex_id}']
+# df['curr_delta_y'] = df[f'dy{best_vertex_id}'] - df[f'pdy{best_vertex_id}']
+# df['curr_delta_z'] = df[f'dz{best_vertex_id}'] - df[f'pdz{best_vertex_id}']
+prev_all_cols = []
+for i in range(N_VERTICES):
+    if i not in FIXED_INDICES:
+        prev_all_cols += [f'pdx{i}', f'pdy{i}', f'pdz{i}']
+
+
+# Compressed accumulated stress (summary stats, not all 543)
+sax_cols = [f'sax{i}' for i in range(181)]
+say_cols = [f'say{i}' for i in range(181)]
+
+df['stress_max'] = np.sqrt(
+    df[sax_cols].values**2 + 
+    df[say_cols].values**2).max(axis=1)
+df['stress_mean'] = np.sqrt(
+    df[sax_cols].values**2 + 
+    df[say_cols].values**2).mean(axis=1)
+df['stress_n_active'] = (df[say_cols].abs() > 0.001).sum(axis=1)
+
 
 input_cols = [
     'tool_x',    'tool_y',    'tool_z',
     'tool_vx',   'tool_vy',   'tool_vz',
     'tool_fx',   'tool_fy',   'tool_fz',
-    'v_max_mag',
-    'pd_max_mag','pd_mean_mag',
-] + prev_dx_cols + prev_dy_cols + prev_dz_cols  # ← add previous displacements as inputs for temporal context
+    'stress_max', 'stress_mean', 'stress_n_active',  # ← ADD
+ ]+ prev_all_cols
 
-N_INPUTS = 555  # 9 original + 3 force features + 3 velocity features + 543 previous displacements = 558 total inputs
 
-# ── Outputs (N_VERTICES * 3 values) ──────────────────────────
+df = df.dropna().copy()
+# ── 4. Dynamic Dimensionality (No Hardcoding!) ───────────────────────────────
+N_INPUTS = len(input_cols)  # Dynamically evaluates to 27, ensuring no PyTorch crashes
+
+# ── 5. Align Outputs with What We Want to Predict ────────────────────────────
+# We are predicting the frame-to-frame delta movements
 deform_cols = []
 for i in range(N_VERTICES):
-    deform_cols += [f'dx{i}', f'dy{i}', f'dz{i}']
+    if i not in FIXED_INDICES:
+        deform_cols += [f'dx{i}', f'dy{i}', f'dz{i}']
+N_OUT = len(deform_cols)  # 178 * 3 = 534
 
 # Check all columns exist
 missing_in = [c for c in input_cols  if c not in df.columns]
 missing_out= [c for c in deform_cols if c not in df.columns]
+
+
 if missing_in:
     raise ValueError(f"Missing input columns: {missing_in}\n"
                      f"Available: {list(df.columns[:15])}")
@@ -117,13 +164,10 @@ idx = torch.argmin(stds)
 print("Smallest std column:", input_cols[idx])
 print("X std min/max:", stds.min().item(), "/", stds.max().item())
 
-# Remove zero variance columns
-valid_mask = stds > 1e-6
-input_cols = [c for c, v in zip(input_cols, valid_mask.tolist()) if v]
 N_INPUTS = len(input_cols)
-X_raw_tensor = X_raw_tensor[:, valid_mask]
-print(f"Valid inputs after removing zero-variance: {N_INPUTS}")
-Y_raw_tensor = torch.FloatTensor(df[deform_cols].values)  # (N, 543)
+print(f"Inputs kept (no variance filtering): {N_INPUTS}")
+
+Y_raw_tensor = torch.FloatTensor(df[deform_cols].values)  # (N, 3)
 
 force_mag = X_raw_tensor[:, 6:9].norm(dim=1)
 force_mask = force_mag > 0.01
@@ -142,16 +186,16 @@ Y_all = Y_raw_tensor
 
 # ── Chronological Split (Prevents data leakage!) ───────────────
 # ADD before n_train split:
-perm = torch.randperm(len(X_all))
-X_all = X_all[perm]
-Y_all = Y_all[perm]
+perm_all = torch.randperm(len(X_all))
+X_all_shuffled = X_all[perm_all]
+Y_all_shuffled = Y_all[perm_all]
 n_train = int(TRAIN_SPLIT * len(X_all))
 
 X_train_raw = X_all[:n_train]
 Y_train_raw = Y_all[:n_train]
 
-X_test_raw = X_all[n_train:]
-Y_test_raw = Y_all[n_train:]  # Held out clean test data
+X_test_raw = X_all_shuffled[n_train:]
+Y_test_raw = Y_all_shuffled[n_train:]  # Held out clean test data
 
 Y_scale = float(Y_all.abs().max().item()) * 1.1
 print(f"  Y_scale from full data: {Y_scale:.4f}")
@@ -228,6 +272,8 @@ def loss_boundary(u_pred, fixed_idx):
     total = torch.tensor(0.0, device=u_pred.device)  # ← same device as u_pred
     for vi in fixed_idx:
         # NEW METHOD
+        if u_pred.shape[1] == 3:
+            return torch.tensor(0.0, device=u_pred.device)
         u_reshaped = u_pred.reshape(-1, 181, 3) 
         total = total + torch.mean(u_reshaped[:, vi, : ] ** 2)
     return total / len(fixed_idx)
@@ -295,14 +341,10 @@ for epoch in range(start_epoch, N_EPOCHS):
         # Data loss
         L_data = loss_data(u_pred, Y_batch)
 
-        # Boundary condition loss
-        # Convert prediction back to physical scale for BC loss
-        L_bc = loss_boundary(u_pred, FIXED_INDICES)
-
         # Physics weight — ramp up slowly
+        L_bc = loss_boundary(u_pred, FIXED_INDICES)
         progress = epoch / N_EPOCHS
-        w_bc = 0.1 + 0.4 * progress   
-
+        w_bc = 0.1 + 0.4 * progress
         L = L_data + w_bc * L_bc
 
         optimizer.zero_grad()
@@ -375,9 +417,14 @@ with torch.no_grad():
     rel_err = torch.norm(u_pred - u_true) / (torch.norm(u_true) + 1e-8)
     print(f"Relative L2 error:        {rel_err.item()*100:.2f}%")
 
-    # Pure PyTorch tracking avoids array type errors
-    diff = (u_pred - u_true).reshape(-1, N_VERTICES, 3)
-    per_vertex_err = torch.norm(diff, dim=2)
+    if N_OUT == 3:
+        per_sample_err = torch.norm(u_pred - u_true, dim=1)
+        print(f"Mean delta error:         {per_sample_err.mean().item():.6f}")
+        print(f"Max delta error:          {per_sample_err.max().item():.6f}")
+    else:
+        # Pure PyTorch tracking avoids array type errors
+        diff = (u_pred - u_true).reshape(-1, N_VERTICES, 3)
+        per_vertex_err = torch.norm(diff, dim=2)
 
     # ADD — visual comparison of one sample
     import matplotlib
@@ -391,49 +438,55 @@ with torch.no_grad():
     axes[0].set_title('Sample 0: Full deformation')
     axes[0].legend()
 
-    # Plot 2 — worst sample
-    worst_idx = per_vertex_err.max(dim=1).values.argmax().item()
-    axes[1].plot(u_true[worst_idx].numpy(), label='FEM true', alpha=0.7)
-    axes[1].plot(u_pred[worst_idx].numpy(), label='PINN pred', alpha=0.7)
-    axes[1].set_title(f'Worst sample ({worst_idx})')
-    axes[1].legend()
+    if N_OUT != 3:
+        # Plot 2 — worst sample
+        worst_idx = per_vertex_err.max(dim=1).values.argmax().item()
+        axes[1].plot(u_true[worst_idx].numpy(), label='FEM true', alpha=0.7)
+        axes[1].plot(u_pred[worst_idx].numpy(), label='PINN pred', alpha=0.7)
+        axes[1].set_title(f'Worst sample ({worst_idx})')
+        axes[1].legend()
 
-    # Plot 3 — best sample
-    best_idx = per_vertex_err.max(dim=1).values.argmin().item()
-    axes[2].plot(u_true[best_idx].numpy(), label='FEM true', alpha=0.7)
-    axes[2].plot(u_pred[best_idx].numpy(), label='PINN pred', alpha=0.7)
-    axes[2].set_title(f'Best sample ({best_idx})')
-    axes[2].legend()
+        # Plot 3 — best sample
+        best_idx = per_vertex_err.max(dim=1).values.argmin().item()
+        axes[2].plot(u_true[best_idx].numpy(), label='FEM true', alpha=0.7)
+        axes[2].plot(u_pred[best_idx].numpy(), label='PINN pred', alpha=0.7)
+        axes[2].set_title(f'Best sample ({best_idx})')
+        axes[2].legend()
 
     plt.tight_layout()
     plt.savefig('sample_comparison.png', dpi=150)
     print("Sample comparison saved to sample_comparison.png")
     
-    # Removed the multiplication by Y_scale since u_pred and u_true are already in raw physical scales
-    # CHANGE TO:
-    max_err_mm = per_vertex_err.max().item() * Y_scale * 1000
-    mean_err_mm = per_vertex_err.mean().item() * Y_scale * 1000
 
-    print(f"Max vertex error:         {max_err_mm:.3f} mm")
-    print(f"Mean vertex error:        {mean_err_mm:.4f} mm")
+    if N_OUT != 3:
+        # Removed the multiplication by Y_scale since u_pred and u_true are already in raw physical scales
+        # CHANGE TO:
+        max_err_mm = per_vertex_err.max().item() * Y_scale * 1000
+        mean_err_mm = per_vertex_err.mean().item() * Y_scale * 1000
 
-    # ← ADD HERE ↓
-    contact_mask = (np.linalg.norm(Y_test.numpy(), axis=1) > 0.001)
-    print(f"Contact frames in test:   {contact_mask.sum().item()} / {len(contact_mask)}")
+        print(f"Max vertex error:         {max_err_mm:.3f} mm")
+        print(f"Mean vertex error:        {mean_err_mm:.4f} mm")
 
-    rel_err_contact = torch.norm(u_pred[contact_mask] - u_true[contact_mask]) / \
-                    (torch.norm(u_true[contact_mask]) + 1e-8)
-    print(f"Relative L2 error (contact only): {rel_err_contact.item()*100:.2f}%")
+    
+        # ← ADD HERE ↓
+        contact_mask = (np.linalg.norm(Y_test.numpy(), axis=1) > 0.001)
+        print(f"Contact frames in test:   {contact_mask.sum().item()} / {len(contact_mask)}")
 
-    # Boundary condition check
-    for vi in FIXED_INDICES:
-        cols = slice(3*vi, 3*vi+3)
-        fixed_err = u_pred[:, cols].abs().max().item() * 1000
-        print(f"Fixed vertex {vi:3d} max disp: {fixed_err:.4f} mm")
+        rel_err_contact = torch.norm(u_pred[contact_mask] - u_true[contact_mask]) / \
+                        (torch.norm(u_true[contact_mask]) + 1e-8)
+        print(f"Relative L2 error (contact only): {rel_err_contact.item()*100:.2f}%")
 
-    # What % of test samples are within 1mm error?
-    within_1mm = (per_vertex_err.max(dim=1).values < 0.001 / Y_scale).float().mean().item()
-    print(f"Samples within 1mm:       {within_1mm*100:.1f}%")
+    if N_OUT != 3:
+        # Boundary condition check
+        for vi in FIXED_INDICES:
+            cols = slice(3*vi, 3*vi+3)
+            fixed_err = u_pred[:, cols].abs().max().item() * 1000
+            print(f"Fixed vertex {vi:3d} max disp: {fixed_err:.4f} mm")
+
+    if N_OUT != 3:
+        # What % of test samples are within 1mm error?
+        within_1mm = (per_vertex_err.max(dim=1).values < 0.001 / Y_scale).float().mean().item()
+        print(f"Samples within 1mm:       {within_1mm*100:.1f}%")
 
     # ADD in Step 5 validation:
     print("Train target mean abs:", Y_train.abs().mean().item())
@@ -478,8 +531,8 @@ plt.title('Training Loss')
 plt.yscale('log')
 
 plt.subplot(1, 2, 2)
-plt.bar(['Rel L2 %', 'Max err mm', 'Mean err mm'],
-        [rel_err.item()*100, max_err_mm, mean_err_mm])
+plt.bar(['Rel L2 %', 'MAE', 'RMSE'],
+        [rel_err.item()*100, mae.item(), rmse.item()])
 plt.title('Validation vs FEM')
 
 plt.tight_layout()
