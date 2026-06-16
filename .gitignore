@@ -69,3 +69,14 @@ compile_commands.json
 # to .git/info/exclude instead of .gitignore. Also, .gitignore files
 # can be placed in sub-directories to avoid polluting the root one.
 
+# PINN project — exclude large files
+build/
+pinn_project/data/
+pinn_project/collect_data/build/
+pinn_project/train/*.pth
+pinn_project/train/*.png
+pinn_project/test/__pycache__/
+share/mesh/liver_light_jms.obj
+share/mesh/liver_reduced_50pct.msh
+*.patch
+
