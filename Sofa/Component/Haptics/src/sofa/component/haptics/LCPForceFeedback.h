@@ -26,6 +26,8 @@
 #include <sofa/core/behavior/MechanicalState.h>
 #include <sofa/helper/system/thread/CTime.h>
 #include <mutex>
+#include <vector>  // <--- ADD THIS
+#include <chrono>  // <--- ADD THIS
 
 #include <sofa/component/constraint/lagrangian/solver/ConstraintSolverImpl.h>
 
@@ -108,6 +110,15 @@ public:
 
         return core::objectmodel::BaseObject::canCreate(obj, context, arg);
     }
+    struct forcetime {
+        sofa::type::Vec3d force;
+        std::chrono::high_resolution_clock::time_point real_time;
+        double sim_time; // Added for your PINN synchronization
+    };
+
+    forcetime getForce() const {
+        return ft;
+    }
 
     /// Overide method to lock or unlock the force feedback computation. According to parameter, value == true (resp. false) will lock (resp. unlock) mutex @sa lockForce
     void setLock(bool value) override;
@@ -117,8 +128,13 @@ protected:
     VecCoord mVal[3];
     MatrixDeriv mConstraints[3];
     std::vector<int> mId_buf[3];
+    struct forcetime ft{};
     component::constraint::lagrangian::solver::ConstraintProblem* mCP[3];
+    sofa::type::Vec3d currentForce {0.0, 0.0, 0.0};
+   
+     std::vector<forcetime> force_history;
 
+     // For external access to current constraint problem (e.g. for logging)
     unsigned char mNextBufferId; // Next buffer id to be use
     unsigned char mCurBufferId; // Current buffer id in use
     bool mIsCuBufferInUse; // Is current buffer currently in use right now
@@ -135,6 +151,23 @@ protected:
     /// mutex used in method @doComputeForce which can be touched from outside using method @sa setLock if components are modified in another thread.
     std::mutex lockForce;
 };
+
+// ── KEEP ONLY THESE DECLARATIONS AT THE BOTTOM ──
+template <typename DataTypes>
+void LCPForceFeedback<DataTypes>::computeForce(SReal, SReal, SReal, SReal, SReal, SReal, SReal, SReal&, SReal&, SReal&) {}
+
+template <typename DataTypes>
+void LCPForceFeedback<DataTypes>::computeWrench(const sofa::defaulttype::SolidTypes<SReal>::Transform &,
+        const sofa::defaulttype::SolidTypes<SReal>::SpatialVector &,
+        sofa::defaulttype::SolidTypes<SReal>::SpatialVector & ) {}
+
+template <>
+void SOFA_COMPONENT_HAPTICS_API LCPForceFeedback< sofa::defaulttype::Rigid3Types >::computeForce(SReal x, SReal y, SReal z, SReal, SReal, SReal, SReal, SReal& fx, SReal& fy, SReal& fz);
+
+template <>
+void SOFA_COMPONENT_HAPTICS_API LCPForceFeedback< sofa::defaulttype::Rigid3Types >::computeWrench(const sofa::defaulttype::SolidTypes<SReal>::Transform &world_H_tool,
+        const sofa::defaulttype::SolidTypes<SReal>::SpatialVector &/*V_tool_world*/,
+        sofa::defaulttype::SolidTypes<SReal>::SpatialVector &W_tool_world );
 
 #if !defined(SOFA_COMPONENT_CONTROLLER_LCPFORCEFEEDBACK_CPP)
 extern template class SOFA_COMPONENT_HAPTICS_API LCPForceFeedback<defaulttype::Vec1Types>;

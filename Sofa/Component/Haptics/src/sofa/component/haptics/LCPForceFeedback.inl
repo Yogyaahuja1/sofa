@@ -404,31 +404,56 @@ void LCPForceFeedback<DataTypes>::handleEvent(sofa::core::objectmodel::Event *ev
 // Those functions are here for compatibility with the Forcefeedback scheme
 //
 
-template <typename DataTypes>
-void LCPForceFeedback<DataTypes>::computeForce(SReal , SReal, SReal, SReal, SReal, SReal, SReal, SReal&, SReal&, SReal&)
+template <>
+void LCPForceFeedback< sofa::defaulttype::Rigid3Types >::computeForce(SReal x, SReal y, SReal z, SReal, SReal, SReal, SReal, SReal& fx, SReal& fy, SReal& fz)
 {
-
+    sofa::defaulttype::Rigid3Types::VecCoord state;
+    sofa::defaulttype::Rigid3Types::VecDeriv forces;
+    
+    state.resize(1);
+    state[0].getCenter() = sofa::type::Vec3(x, y, z);
+    computeForce(state, forces);
+    
+    fx = getVCenter(forces[0]).x();
+    fy = getVCenter(forces[0]).y();
+    fz = getVCenter(forces[0]).z();
+    
+    this->ft.force = sofa::type::Vec3d(fx, fy, fz);
+    this->ft.real_time = std::chrono::high_resolution_clock::now();
+    this->ft.sim_time = this->getContext()->getTime();
 }
 
-
-template <typename DataTypes>
-void LCPForceFeedback<DataTypes>::computeWrench(const sofa::defaulttype::SolidTypes<SReal>::Transform &,
-        const sofa::defaulttype::SolidTypes<SReal>::SpatialVector &,
-        sofa::defaulttype::SolidTypes<SReal>::SpatialVector & )
-{
-
-}
-
-
-
 template <>
-void SOFA_COMPONENT_HAPTICS_API LCPForceFeedback< sofa::defaulttype::Rigid3Types >::computeForce(SReal x, SReal y, SReal z, SReal, SReal, SReal, SReal, SReal& fx, SReal& fy, SReal& fz);
-
-template <>
-void SOFA_COMPONENT_HAPTICS_API LCPForceFeedback< sofa::defaulttype::Rigid3Types >::computeWrench(const sofa::defaulttype::SolidTypes<SReal>::Transform &world_H_tool,
+void LCPForceFeedback< sofa::defaulttype::Rigid3Types >::computeWrench(const sofa::defaulttype::SolidTypes<SReal>::Transform &world_H_tool,
         const sofa::defaulttype::SolidTypes<SReal>::SpatialVector &/*V_tool_world*/,
-        sofa::defaulttype::SolidTypes<SReal>::SpatialVector &W_tool_world );
+        sofa::defaulttype::SolidTypes<SReal>::SpatialVector &W_tool_world )
+{
+    if (!this->d_activate.getValue())
+    {
+        return;
+    }
 
+    sofa::defaulttype::Rigid3Types::VecCoord state;
+    sofa::defaulttype::Rigid3Types::VecDeriv forces;
+    state.resize(1);
+    state[0].getCenter()      = world_H_tool.getOrigin();
+    state[0].getOrientation() = world_H_tool.getOrientation();
+
+    computeForce(state, forces);
+
+    W_tool_world.setForce(getVCenter(forces[0]));
+    W_tool_world.setTorque(getVOrientation(forces[0]));
+
+    double fx = getVCenter(forces[0]).x();
+    double fy = getVCenter(forces[0]).y();
+    double fz = getVCenter(forces[0]).z();
+    
+    this->ft.force = sofa::type::Vec3d(fx, fy, fz);
+    this->ft.real_time = std::chrono::high_resolution_clock::now();
+    this->ft.sim_time = this->getContext()->getTime();
+    
+    this->currentForce = this->ft.force;
+}
 
 
 
