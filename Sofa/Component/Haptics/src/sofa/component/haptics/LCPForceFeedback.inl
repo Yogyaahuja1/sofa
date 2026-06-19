@@ -29,6 +29,7 @@
 
 #include <algorithm>
 #include <mutex>
+#include <iostream>
 
 namespace
 {
@@ -122,6 +123,7 @@ namespace sofa::component::haptics
 template <class DataTypes>
 LCPForceFeedback<DataTypes>::LCPForceFeedback()
     : forceCoef(initData(&forceCoef, 0.03, "forceCoef","multiply haptic force by this coef."))
+    , d_usePINN(initData(&d_usePINN, true, "usePINN", "Set false in data-collection scenes to skip PINN forward pass"))
     , solverTimeout(initData(&solverTimeout, 0.0008, "solverTimeout","max time to spend solving constraints."))
     , d_solverMaxIt(initData(&d_solverMaxIt, 100, "solverMaxIt", "max iteration to spend solving constraints"))
     , d_derivRotations(initData(&d_derivRotations, false, "derivRotations", "if true, deriv the rotations when updating the violations"))
@@ -173,6 +175,56 @@ void LCPForceFeedback<DataTypes>::init()
         msg_error() << "LCPForceFeedback has no binding MechanicalState. Initialisation failed.";
         return;
     }
+
+    // ── PINN predictor init ──────────────────────────────────────────────────
+    if (!d_usePINN.getValue())
+    {
+        msg_info() << "PINN disabled via usePINN=false — skipping model load (data-collection mode).";
+    }
+    else
+    {
+        m_pinn = new PINNPredictor();
+        if (m_pinn->init(
+            "/home/yogyaahuja/sofa/pinn_project/cpp/pinn_model_traced.pt",
+            "/home/yogyaahuja/sofa/pinn_project/cpp/normalization_stats.csv",
+            "/home/yogyaahuja/sofa/pinn_project/cpp/liver_vertices.csv"))
+        {
+            m_usePINN = true;
+            msg_info() << "PINN predictor initialized — using PINN force instead of LCP solver.";
+        }
+        else
+        {
+            msg_warning() << "PINN predictor init failed — falling back to LCP solver.";
+            delete m_pinn; m_pinn = nullptr;
+        }
+    }
+
+    // Find liver DOFs by name to avoid picking up instrument collision meshes
+    {
+        std::vector<sofa::core::behavior::MechanicalState<sofa::defaulttype::Vec3Types>*> allStates;
+        c->get<sofa::core::behavior::MechanicalState<sofa::defaulttype::Vec3Types>>(
+            &allStates, core::objectmodel::BaseContext::SearchRoot);
+        for (auto* ms : allStates)
+            if (ms->getName() == "liverDofs") { m_liverDofs = ms; break; }
+    }
+    c->get(m_femFF,     core::objectmodel::BaseContext::SearchRoot);
+    c->get(m_liverTopo, core::objectmodel::BaseContext::SearchRoot);
+    if (m_liverDofs)
+    {
+        int nv = (int)m_liverDofs->getSize();
+        m_prevDeform.assign(nv, sofa::type::Vec3d(0.0, 0.0, 0.0));
+        m_accStress.assign(nv,  sofa::type::Vec3d(0.0, 0.0, 0.0));
+        m_accStressInit = true;
+        // Precompute rest positions once — safe to read from any thread
+        const auto& rest = m_liverDofs->read(sofa::core::ConstVecCoordId::restPosition())->getValue();
+        m_liverRestPos.assign(rest.begin(), rest.end());
+        msg_info() << "PINN: Found liver MechanicalState '" << m_liverDofs->getName()
+                   << "' with " << nv << " vertices.";
+    }
+    else
+        msg_warning() << "PINN: 'liverDofs' MechanicalState not found — FEM buffer updates disabled.";
+    if (!m_femFF)
+        msg_warning() << "PINN: TetrahedronFEMForceField not found — real strain will be zero.";
 }
 
 template <class DataTypes>
@@ -246,9 +298,19 @@ void LCPForceFeedback<DataTypes>::doComputeForce(const VecCoord& state,  VecDeri
     const unsigned int stateSize = state.size();
     forces.resize(stateSize);
     for (unsigned int i = 0; i < forces.size(); ++i)
-    {
         forces[i].clear();
+
+    // ── PINN force path: haptic thread reads cached force only (no CUDA here) ─
+    if constexpr (std::is_same_v<DataTypes, sofa::defaulttype::Rigid3Types>)
+    {
+        if (m_usePINN && m_pinn && m_pinn->isInitialized() && !state.empty())
+        {
+            std::lock_guard<std::mutex> lk(m_pinnCacheMutex);
+            sofa::defaulttype::getVCenter(forces[0]) = m_pinnCachedForce;
+            return;
+        }
     }
+    // ─────────────────────────────────────────────────────────────────────────
 
     if(!constraintSolver||!mState)
         return;
@@ -397,6 +459,262 @@ void LCPForceFeedback<DataTypes>::handleEvent(sofa::core::objectmodel::Event *ev
         constraintSolver->lockConstraintProblem(this, mCP[mCurBufferId], mCP[mNextBufferId]);
     else
         constraintSolver->lockConstraintProblem(this, mCP[mNextBufferId]);
+
+    // ── PINN: read FEM result and push to predictor buffer ───────────────────
+    if (m_usePINN && m_pinn && m_liverDofs)
+    {
+        static int s_hev = 0;
+        ++s_hev;
+        const bool log = (s_hev <= 3 || s_hev % 500 == 0 || s_hev >= 3000);
+
+        const auto& curPos  = m_liverDofs->read(sofa::core::ConstVecCoordId::position())->getValue();
+        const auto& freePos = m_liverDofs->read(sofa::core::ConstVecCoordId::freePosition())->getValue();
+        const auto& restPos = m_liverDofs->read(sofa::core::ConstVecCoordId::restPosition())->getValue();
+        int nv = (int)curPos.size();
+
+        if (log) std::cerr << "[PINN] handleEvent #" << s_hev
+                           << " A: nv=" << nv
+                           << " prevDeform=" << m_prevDeform.size()
+                           << " freePos=" << freePos.size()
+                           << " restPos=" << restPos.size() << std::endl;
+
+        // Safety: if sizes don't match init, skip to avoid heap corruption
+        if (nv != (int)m_prevDeform.size() || nv != (int)restPos.size())
+        {
+            std::cerr << "[PINN] handleEvent #" << s_hev
+                      << " SIZE MISMATCH — skipping (nv=" << nv
+                      << " prevDeform=" << m_prevDeform.size()
+                      << " restPos=" << restPos.size() << ")" << std::endl;
+            return;
+        }
+
+        // Delta deformation: (curPos-restPos) - prevDeform
+        // MAX_DEFORM_MM: maximum plausible liver deformation (~30mm). Anything beyond
+        // signals simulation divergence — clamp to 0 so PINN buffer stays clean.
+        static constexpr double MAX_DEFORM_MM = 30.0;
+        std::vector<float> ddx(nv), ddy(nv), ddz(nv);
+        for (int i = 0; i < nv; ++i)
+        {
+            double cx = curPos[i][0] - restPos[i][0];
+            double cy = curPos[i][1] - restPos[i][1];
+            double cz = curPos[i][2] - restPos[i][2];
+            if (!std::isfinite(cx) || !std::isfinite(cy) || !std::isfinite(cz) ||
+                std::abs(cx) > MAX_DEFORM_MM || std::abs(cy) > MAX_DEFORM_MM || std::abs(cz) > MAX_DEFORM_MM)
+            {
+                ddx[i] = 0.f; ddy[i] = 0.f; ddz[i] = 0.f;
+                continue; // don't update m_prevDeform — keep last valid value
+            }
+            ddx[i] = (float)(cx - m_prevDeform[i][0]);
+            ddy[i] = (float)(cy - m_prevDeform[i][1]);
+            ddz[i] = (float)(cz - m_prevDeform[i][2]);
+            m_prevDeform[i] = sofa::type::Vec3d(cx, cy, cz);
+        }
+        if (log) std::cerr << "[PINN] handleEvent #" << s_hev << " B: ddx built" << std::endl;
+
+        // Contact-proxy EMA (sax/say/saz = smoothed freePos - curPos)
+        std::vector<float> sax(nv), say(nv), saz(nv);
+        for (int i = 0; i < nv && i < (int)freePos.size(); ++i)
+        {
+            auto proxy = freePos[i] - curPos[i];
+            if (std::isfinite(proxy[0]) && std::isfinite(proxy[1]) && std::isfinite(proxy[2]))
+            {
+                // Reset EMA if previously poisoned by NaN
+                if (!std::isfinite(m_accStress[i][0]))
+                    m_accStress[i] = sofa::type::Vec3d(proxy[0], proxy[1], proxy[2]);
+                else
+                {
+                    m_accStress[i][0] = m_stressAlpha * m_accStress[i][0] + (1-m_stressAlpha) * proxy[0];
+                    m_accStress[i][1] = m_stressAlpha * m_accStress[i][1] + (1-m_stressAlpha) * proxy[1];
+                    m_accStress[i][2] = m_stressAlpha * m_accStress[i][2] + (1-m_stressAlpha) * proxy[2];
+                }
+            }
+            else if (!std::isfinite(m_accStress[i][0]))
+                m_accStress[i] = sofa::type::Vec3d(0, 0, 0);
+            sax[i] = (float)m_accStress[i][0];
+            say[i] = (float)m_accStress[i][1];
+            saz[i] = (float)m_accStress[i][2];
+        }
+        if (log) std::cerr << "[PINN] handleEvent #" << s_hev << " C: sax built" << std::endl;
+
+        // Real Hooke's-law strain from TetrahedronFEMForceField
+        // Skipped during PrecomputedConstraintCorrection precomputation (extreme D values).
+        std::vector<float> rxx(nv, 0.f), ryy(nv, 0.f), rzz(nv, 0.f);
+        if (m_femFF && m_liverTopo)
+        {
+            const auto& tets = m_liverTopo->getTetrahedra();
+            if (log) std::cerr << "[PINN] handleEvent #" << s_hev
+                               << " D: tets=" << tets.size() << std::endl;
+            std::vector<int> cnt(nv, 0);
+            static constexpr double D_MAX = 5.0; // skip tet if deformation > 5 units (precomputation guard)
+            for (size_t t = 0; t < tets.size(); ++t)
+            {
+                const auto& tet   = tets[t];
+                bool valid = true;
+                for (int i = 0; i < 4; ++i)
+                    if (tet[i] >= (unsigned int)nv) { valid = false; break; }
+                if (!valid) continue;
+
+                const auto& R_2_0 = m_femFF->getActualTetraRotation((unsigned int)t);
+                const auto  R_0_2 = R_2_0.transposed();
+                sofa::type::Vec3d def[4];
+                for (int i = 0; i < 4; ++i)
+                    def[i] = R_0_2 * curPos[tet[i]];
+
+                def[1][0] -= def[0][0];
+                def[2][0] -= def[0][0]; def[2][1] -= def[0][1];
+                def[3]    -= def[0];
+
+                const auto& rotInit = m_femFF->getRotatedInitialElements((unsigned int)t);
+                sofa::type::Vec<12,double> D;
+                D[3] = rotInit[1][0]-def[1][0]; D[6] = rotInit[2][0]-def[2][0];
+                D[7] = rotInit[2][1]-def[2][1]; D[9] = rotInit[3][0]-def[3][0];
+                D[10]= rotInit[3][1]-def[3][1]; D[11]= rotInit[3][2]-def[3][2];
+
+                // Skip if deformation is NaN/inf or physically implausible (precomputation step)
+                bool d_ok = true;
+                for (int k = 0; k < 12; ++k)
+                    if (!std::isfinite(D[k]) || std::abs(D[k]) > D_MAX) { d_ok = false; break; }
+                if (!d_ok) continue;
+
+                const auto strain = m_femFF->getStrainDisplacement((unsigned int)t).multTranspose(D);
+                for (int i = 0; i < 4; ++i)
+                {
+                    rxx[tet[i]] += (float)strain[0];
+                    ryy[tet[i]] += (float)strain[1];
+                    rzz[tet[i]] += (float)strain[2];
+                    cnt[tet[i]]++;
+                }
+            }
+            for (int v = 0; v < nv; ++v)
+                if (cnt[v] > 0) { rxx[v] /= cnt[v]; ryy[v] /= cnt[v]; rzz[v] /= cnt[v]; }
+        }
+        // ── DIAG-2: rxx non-zero means strain is being computed (not all filtered by D_MAX) ──
+        {
+            float max_rxx = 0.f;
+            for (int v = 0; v < nv; ++v) max_rxx = std::max(max_rxx, std::abs(rxx[v]));
+            if (log) std::cerr << "[PINN] handleEvent #" << s_hev << " E: strain done"
+                               << " rxx[0]=" << rxx[0] << " max|rxx|=" << max_rxx;
+            if (max_rxx == 0.f && s_hev > 5)
+                std::cerr << "  << ALL ZERO — D_MAX filtering everything or no contact";
+            std::cerr << std::endl;
+        }
+
+        m_pinn->updateFEM(ddx.data(), ddy.data(), ddz.data(),
+                          sax.data(), say.data(), saz.data(),
+                          rxx.data(), ryy.data(), rzz.data());
+        if (log) std::cerr << "[PINN] handleEvent #" << s_hev << " F: updateFEM done" << std::endl;
+
+        // ── Run PINN inference here on SOFA thread ───────────────────────────
+        if constexpr (std::is_same_v<DataTypes, sofa::defaulttype::Rigid3Types>)
+        {
+            if (mState)
+            {
+                const auto& toolCoords = mState->read(sofa::core::ConstVecCoordId::position())->getValue();
+                if (!toolCoords.empty())
+                {
+                    const auto& center = toolCoords[0].getCenter();
+                    float tx = (float)center[0], ty = (float)center[1], tz = (float)center[2];
+
+                    if (!std::isfinite(tx) || !std::isfinite(ty) || !std::isfinite(tz))
+                    {
+                        // ALWAYS log NaN tool pos — exceptional event
+                        std::cerr << "[PINN-GUARD] handleEvent #" << s_hev
+                                  << " NaN/inf tool pos tx=" << tx << " ty=" << ty
+                                  << " tz=" << tz << " — skipping" << std::endl;
+                        if (log) std::cerr << "[PINN] handleEvent #" << s_hev << " DONE" << std::endl;
+                        return;
+                    }
+
+                    // ── DIAG-3: ty distribution check (training mean=4.23, std=1.36) ──
+                    // Normalized ty should be within ±4 for valid predictions.
+                    // Values beyond ±6 are far out-of-distribution → likely NaN output.
+                    {
+                        float ty_norm = (ty - 4.2251f) / 1.3605f;
+                        if (log) std::cerr << "[PINN] handleEvent #" << s_hev
+                                           << " G: tx=" << tx << " ty=" << ty
+                                           << " tz=" << tz
+                                           << " ty_norm=" << ty_norm;
+                        if (std::abs(ty_norm) > 5.f)
+                            std::cerr << "  << OUT-OF-DIST (|ty_norm|=" << std::abs(ty_norm) << ">5) — expect NaN";
+                        std::cerr << std::endl;
+                    }
+
+                    float min_dist = 1e9f;
+                    for (const auto& v : m_liverRestPos)
+                    {
+                        float dx = (float)(v[0]-tx), dy = (float)(v[1]-ty), dz = (float)(v[2]-tz);
+                        float d = std::sqrt(dx*dx + dy*dy + dz*dz);
+                        if (d < min_dist) min_dist = d;
+                    }
+
+                    if (!m_pinnTimerSet)
+                    {
+                        m_pinnStartTime = std::chrono::high_resolution_clock::now();
+                        m_pinnTimerSet  = true;
+                    }
+                    double elapsed = std::chrono::duration<double>(
+                        std::chrono::high_resolution_clock::now() - m_pinnStartTime).count();
+
+                    // ── FPS TIME-GATE ─────────────────────────────────────────────────────────
+                    // Training was collected at ~69.7 fps (14.5ms per step).
+                    // Replay at 220fps gives dt_pred=22ms instead of training 72ms (-1.84sigma).
+                    // Only call predictForce every 14.5ms to match training fps exactly.
+                    static constexpr double PINN_TARGET_CALL_DT = 0.0145; // 1/69 Hz
+                    const bool pinn_due = (m_lastPINNCallElapsed < 0.0) ||
+                                         (elapsed - m_lastPINNCallElapsed >= PINN_TARGET_CALL_DT);
+
+                    float pfx, pfy, pfz;
+                    {
+                        std::lock_guard<std::mutex> lk(m_pinnCacheMutex);
+                        pfx = (float)m_pinnCachedForce[0];
+                        pfy = (float)m_pinnCachedForce[1];
+                        pfz = (float)m_pinnCachedForce[2];
+                    }
+
+                    if (pinn_due)
+                    {
+                        // Compute velocity from position diff since last PINN call (units: same as pos/s)
+                        float tvx = 0.f, tvy = 0.f, tvz = 0.f;
+                        if (m_lastPINNCallElapsed > 0.0)
+                        {
+                            double dt_call = elapsed - m_lastPINNCallElapsed;
+                            if (dt_call > 1e-6)
+                            {
+                                // Clamp to ±20 (training p1/p99 range: -20.09, +20.83)
+                                auto clamp20 = [](float v){ return std::max(-20.f, std::min(20.f, v)); };
+                                tvx = clamp20((float)((tx - m_prevTxForVel) / dt_call));
+                                tvy = clamp20((float)((ty - m_prevTyForVel) / dt_call));
+                                tvz = clamp20((float)((tz - m_prevTzForVel) / dt_call));
+                            }
+                        }
+                        m_prevTxForVel = tx; m_prevTyForVel = ty; m_prevTzForVel = tz;
+                        m_lastPINNCallElapsed = elapsed;
+
+                        if (log) std::cerr << "[PINN] handleEvent #" << s_hev
+                                           << " G: predictForce tx=" << tx << " ty=" << ty << " tz=" << tz
+                                           << " tvx=" << tvx << " tvy=" << tvy << " tvz=" << tvz
+                                           << " elapsed=" << elapsed << "s" << std::endl;
+
+                        auto f = m_pinn->predictForce(tx, ty, tz, tvx, tvy, tvz,
+                                                       pfx, pfy, pfz, min_dist, elapsed);
+
+                        // ── DIAG-4: always log NaN output ────────────────────────────────────
+                        bool f_nan = !std::isfinite(f[0]) || !std::isfinite(f[1]) || !std::isfinite(f[2]);
+                        if (log || f_nan)
+                            std::cerr << "[PINN] handleEvent #" << s_hev
+                                      << " H: predictForce returned ["
+                                      << f[0] << "," << f[1] << "," << f[2] << "]"
+                                      << (f_nan ? "  << NAN — check ty_norm above" : "") << std::endl;
+
+                        std::lock_guard<std::mutex> lk(m_pinnCacheMutex);
+                        m_pinnCachedForce = sofa::type::Vec3d(f[0], f[1], f[2]);
+                    }
+                    // else: not enough time elapsed — reuse cached force (no buffer update)
+                }
+            }
+        }
+        if (log) std::cerr << "[PINN] handleEvent #" << s_hev << " DONE" << std::endl;
+    }
 }
 
 
@@ -407,13 +725,18 @@ void LCPForceFeedback<DataTypes>::handleEvent(sofa::core::objectmodel::Event *ev
 template <>
 void LCPForceFeedback< sofa::defaulttype::Rigid3Types >::computeForce(SReal x, SReal y, SReal z, SReal, SReal, SReal, SReal, SReal& fx, SReal& fy, SReal& fz)
 {
+    fx = fy = fz = 0.0;
+    if (!this->d_activate.getValue()) return;
+
     sofa::defaulttype::Rigid3Types::VecCoord state;
     sofa::defaulttype::Rigid3Types::VecDeriv forces;
-    
+
     state.resize(1);
     state[0].getCenter() = sofa::type::Vec3(x, y, z);
     computeForce(state, forces);
-    
+
+    if (forces.empty()) return;
+
     fx = getVCenter(forces[0]).x();
     fy = getVCenter(forces[0]).y();
     fz = getVCenter(forces[0]).z();

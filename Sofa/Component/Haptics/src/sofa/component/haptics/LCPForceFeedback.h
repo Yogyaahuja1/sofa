@@ -30,6 +30,9 @@
 #include <chrono>  // <--- ADD THIS
 
 #include <sofa/component/constraint/lagrangian/solver/ConstraintSolverImpl.h>
+#include <sofa/defaulttype/VecTypes.h>
+#include <sofa/component/solidmechanics/fem/elastic/TetrahedronFEMForceField.h>
+#include "/home/yogyaahuja/sofa/pinn_project/cpp/PINNPredictor.h"
 
 namespace sofa::component::haptics
 {
@@ -63,6 +66,7 @@ public:
     }
 
     Data< double > forceCoef; ///< multiply haptic force by this coef.
+    Data< bool >   d_usePINN; ///< Set false in data-collection scenes to skip PINN forward pass (saves 3-5ms/step)
 
     Data< double > solverTimeout; ///< max time to spend solving constraints.
 
@@ -150,6 +154,39 @@ protected:
 
     /// mutex used in method @doComputeForce which can be touched from outside using method @sa setLock if components are modified in another thread.
     std::mutex lockForce;
+
+    // ── PINN real-time predictor ─────────────────────────────────────────────
+    PINNPredictor* m_pinn        {nullptr};
+    bool           m_usePINN     {false};
+
+    // Liver DOFs + FEM force field (same as DataCollector, found in init)
+    sofa::core::behavior::MechanicalState<sofa::defaulttype::Vec3Types>* m_liverDofs {nullptr};
+    sofa::component::solidmechanics::fem::elastic::TetrahedronFEMForceField
+        <sofa::defaulttype::Vec3Types>*                                   m_femFF     {nullptr};
+    sofa::core::topology::BaseMeshTopology*                               m_liverTopo {nullptr};
+
+    // Previous liver deformation (curPos - restPos) for computing delta
+    std::vector<sofa::type::Vec3d> m_prevDeform;
+
+    // Contact-proxy EMA (same alpha as DataCollector)
+    std::vector<sofa::type::Vec3d> m_accStress;
+    double m_stressAlpha {0.9};
+    bool   m_accStressInit {false};
+
+    // Liver rest positions precomputed at init — safe to read from any thread
+    std::vector<sofa::type::Vec3d> m_liverRestPos;
+
+    // PINN runs on SOFA thread (AnimateEndEvent); haptic thread reads this cache
+    sofa::type::Vec3d m_pinnCachedForce {0.0, 0.0, 0.0};
+    std::mutex        m_pinnCacheMutex;
+
+    // Wall-clock start (same reference as DataCollector)
+    std::chrono::high_resolution_clock::time_point m_pinnStartTime;
+    bool m_pinnTimerSet {false};
+
+    // Time-gating: only call predictForce at training fps (~69.7 Hz = every 14.5ms)
+    double m_lastPINNCallElapsed {-1.0};
+    float  m_prevTxForVel {0.f}, m_prevTyForVel {0.f}, m_prevTzForVel {0.f};
 };
 
 // ── KEEP ONLY THESE DECLARATIONS AT THE BOTTOM ──

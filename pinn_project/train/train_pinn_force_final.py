@@ -41,7 +41,7 @@ CSV_PATH      = '/home/yogyaahuja/sofa/pinn_project/data/training_data.csv'
 N_VERTICES    = 181
 FIXED_INDICES = [3, 39, 64]             # from FixedConstraint in scene
 BATCH_SIZE    = 64
-N_EPOCHS      = 8000
+N_EPOCHS      = 4000
 LR            = 3e-4
 TRAIN_SPLIT   = 0.8
 N_NEIGHBOURS  = 20
@@ -395,10 +395,14 @@ scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
 
 dataset  = TensorDataset(X_train.to(device), Y_train.to(device))
 loader   = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True)
-y_std_f  = torch.tensor(Y_std[:N_FORCE],  device=device, dtype=torch.float32)
-y_mean_f = torch.tensor(Y_mean[:N_FORCE], device=device, dtype=torch.float32)
+y_std_f  = Y_std[:N_FORCE].detach().clone().to(device)
+y_mean_f = Y_mean[:N_FORCE].detach().clone().to(device)
 
 history = {'epoch': [], 'total': [], 'force': [], 'deform': []}
+
+best_val_loss = float('inf')
+best_epoch    = 0
+MODEL_BEST    = 'tissue_pinn_force_final_best.pth'
 
 print("\nTraining...\n")
 for epoch in range(N_EPOCHS):
@@ -429,6 +433,18 @@ for epoch in range(N_EPOCHS):
     n_batches = len(loader)
     scheduler.step(epoch)
 
+    # checkpoint best model using val set
+    if epoch % 50 == 0:
+        model.eval()
+        with torch.no_grad():
+            val_pred = model(X_test.to(device))
+            val_loss = torch.mean((val_pred - Y_test.to(device)) ** 2).item()
+        model.train()
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+            best_epoch    = epoch
+            torch.save(model.state_dict(), MODEL_BEST)
+
     if epoch % 200 == 0:
         history['epoch'].append(epoch)
         history['total'].append(epoch_total / n_batches)
@@ -439,6 +455,9 @@ for epoch in range(N_EPOCHS):
               f"Force: {epoch_force/n_batches:.6f} | "
               f"Deform: {epoch_deform/n_batches:.6f} | "
               f"LR: {optimizer.param_groups[0]['lr']:.2e}")
+
+print(f"\nBest checkpoint: epoch {best_epoch} (val loss {best_val_loss:.6f}) → {MODEL_BEST}")
+model.load_state_dict(torch.load(MODEL_BEST, map_location=device))
 
 # ============================================================
 # STEP 10: VALIDATE

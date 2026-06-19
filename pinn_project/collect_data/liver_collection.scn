@@ -30,7 +30,7 @@
     <RequiredPlugin name="SofaMatrix"/>
     <RequiredPlugin name="Sofa.Component.LinearSolver.Direct"/>
 
-    <VisualStyle displayFlags="showVisualModels"/>
+    <VisualStyle displayFlags="showVisualModels hideCollisionModels hideBehaviorModels hideMappings hideForceFields"/>
 
     <DefaultVisualManagerLoop/>
     <CollisionPipeline depth="6"/>
@@ -50,12 +50,14 @@
     <!-- ===== LIVER NODE ===== -->
     <Node name="Liver" gravity="0 0 0">
         <EulerImplicitSolver rayleighStiffness="0.1" rayleighMass="0.1"/>
-        <SparseLDLSolver name="directSolver"/>
+        <SparseLDLSolver factorizeEvery="10" name="directSolver"/>
 
+        <!-- GlobalSystemMatrixExporter disabled — synchronous 543×543 CSV write was costing fps
         <GlobalSystemMatrixExporter name="matrix_exporter"
             filename="/home/yogyaahuja/sofa/pinn_project/data/ax_b/A"
             format="csv"
             exportEveryNumberOfSteps="30"/>
+        -->
 
         <MeshGmshLoader name="meshLoader" filename="mesh/liver.msh"/>
         <TetrahedronSetTopologyContainer name="topo" src="@meshLoader"/>
@@ -75,7 +77,7 @@
         <DataCollector
             outputFile="/home/yogyaahuja/sofa/pinn_project/data/training_data.csv"
             collectEvery="3"
-            dumpAxbEvery="30"
+            dumpAxbEvery="0"
             axbDir="/home/yogyaahuja/sofa/pinn_project/data/ax_b"/>
 
         <!-- FIX 1: Visu node — OglModel needs its own name, and src= points to the
@@ -135,11 +137,11 @@
     <!-- DataCollector looks for root->getChild("Instrument")->getMechanicalState()
          which finds instrumentState (Rigid3d) here -->
     <Node name="Instrument">
-        <EulerImplicitSolver rayleighStiffness="0.01" rayleighMass="1.0"/>
+        <EulerImplicitSolver rebuildMatrixEvery="10" rayleighStiffness="0.01" rayleighMass="1.0"/>
         <CGLinearSolver iterations="25" tolerance="1e-10" threshold="10e-10"/>
         <MechanicalObject name="instrumentState" template="Rigid3d" position="0 6 0  0 0 0 1"/>
         <UniformMass totalMass="0.5"/>
-        <LCPForceFeedback  name="LCPForceFeedback" template="Rigid3d"  activate="true" forceCoef="0.1"/>
+        <LCPForceFeedback  name="LCPForceFeedback" template="Rigid3d"  activate="true" forceCoef="0.1" usePINN="false"/>
         <UncoupledConstraintCorrection/>
 
         <Node name="VisualModel">

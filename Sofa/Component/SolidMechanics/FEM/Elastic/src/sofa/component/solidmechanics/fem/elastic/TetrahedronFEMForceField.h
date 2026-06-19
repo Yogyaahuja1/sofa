@@ -143,6 +143,12 @@ protected:
 
     type::vector<VoigtTensor> _plasticStrains; ///< one plastic strain per element
 
+    // Per-tet strain and stress cached after each addForce() call (Voigt notation, 6-D).
+    // Populated at zero extra FEM cost — values are computed anyway during addForce.
+    // External components (e.g. DataCollector) read these instead of recomputing.
+    type::vector<VoigtTensor> _lastStrain;
+    type::vector<VoigtTensor> _lastStress;
+
     /// @name Full system matrix assembly support
     /// @{
 
@@ -264,6 +270,12 @@ public:
 
     // large displacements method
     const type::fixed_array<Coord, 4>& getRotatedInitialElements(TetrahedronID tetraId);
+
+    // Per-tet strain/stress cached during the last addForce() call (Voigt, 6-D).
+    // Returns Vec<6> with [xx, yy, zz, xy, yz, xz] components.
+    const VoigtTensor& getLastStrain(TetrahedronID i) const { return _lastStrain[i]; }
+    const VoigtTensor& getLastStress(TetrahedronID i) const { return _lastStress[i]; }
+    Index getNumTetra() const { return _lastStrain.size(); }
 
 
     void setMethod(std::string methodName);

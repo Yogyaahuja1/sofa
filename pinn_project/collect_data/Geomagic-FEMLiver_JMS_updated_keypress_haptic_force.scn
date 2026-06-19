@@ -25,7 +25,6 @@
     <RequiredPlugin name="Sofa.Component.Topology.Mapping"/> 
     <RequiredPlugin name="Sofa.Component.Visual"/> 
     <RequiredPlugin name="Sofa.GL.Component.Rendering3D"/> 
-    <RequiredPlugin name="PinnDataPlugin" />
 
     <VisualStyle displayFlags="hideBehaviorModels hideCollisionModels hideMappings hideForceFields" />
     <DefaultVisualManagerLoop />
@@ -36,10 +35,12 @@
     <LocalMinDistance name="proximity" alarmDistance="0.15" contactDistance="0.05" angleCone="0.0" />
     <FreeMotionAnimationLoop/>
     <LCPConstraintSolver tolerance="0.001" maxIt="1000"/>
-    <GeomagicDriver name="GeomagicDevice" deviceName="Default Device" scale="1" drawDeviceFrame="1" positionBase="0 0 0" drawDevice="0" orientationBase="0 0.707 0 -0.707"  />
+    <GeomagicDriver name="GeomagicDevice" deviceName="Default Device" scale="1" drawDeviceFrame="1" positionBase="0 0 0" drawDevice="0" orientationBase="0 0.707 0 -0.707"
+        replayFile="/home/yogyaahuja/sofa/pinn_project/data/training_data.csv"
+        replayOutput="/home/yogyaahuja/sofa/pinn_project/data/replay_pinn_forces.csv" />
 
     <Node name="Liver" gravity="0 -9.81 0">
-        <EulerImplicitSolver name="cg_odesolver"  />
+        <EulerImplicitSolver name="cg_odesolver" rayleighStiffness="0.1" rayleighMass="0.1" />
         <CGLinearSolver name="cg_solver" iterations="25" tolerance="1e-09" threshold="1e-09" />
         <MeshGmshLoader name="meshLoader" filename="mesh/liver_reduced_50pct.msh" />
         <TetrahedronSetTopologyContainer name="topo" src="@meshLoader" />
@@ -49,9 +50,10 @@
         <TetrahedronSetGeometryAlgorithms template="Vec3d" name="GeomAlgo" />
         <DiagonalMass name="mass" massDensity="1" topology="@topo" geometryState="@liverDofs"/>
         <TetrahedronFEMForceField template="Vec3d" name="FEM" method="large" poissonRatio="0.45" youngModulus="500" computeGlobalMatrix="0" />
-        <PrecomputedConstraintCorrection recompute="true"/>
+        <PrecomputedConstraintCorrection recompute="false"
+            fileCompliance="/home/yogyaahuja/sofa/share/Liver-543-0.001.comp"/>
 
-        <FixedProjectiveConstraint name="FixedConstraint" indices="0 20 180 3 39 64" />
+        <FixedConstraint name="FixedConstraint" indices="0 20 180 3 39 64" />
 
         
 
@@ -105,7 +107,11 @@
     <Node name="Instrument" >
         <EulerImplicitSolver name="ODE solver" rayleighStiffness="0.05" rayleighMass="1.0" />
         <CGLinearSolver name="linear solver" iterations="25" tolerance="1e-10" threshold="10e-10" /> 
-        <MechanicalObject name="instrumentState" template="Rigid3d" />
+        <!-- Start at first replay CSV position (0.76371 5.97317 -2.10327) so the VectorSpringForceField
+             has zero extension at t=0. Without this, the instrument flies from SOFA origin through
+             the liver to reach the replay start position, causing deep LCP constraint penetration and divergence. -->
+        <MechanicalObject name="instrumentState" template="Rigid3d"
+            position="0.76371 5.97317 -2.10327 0 0 0 1" />
         <UniformMass name="mass" totalMass="0.5" />
         
         <LCPForceFeedback name="forceFeedback" activate="true" forceCoef="0.1"/> 
@@ -141,9 +147,9 @@
             <RigidMapping name="MM->CM mapping" input="@instrumentState" output="@instrumentCollisionState3" />
         </Node>
         
-        <VectorSpringForceField template="Vec3d" object1="@Omni/RefModel/instrumentRefState1" object2="@Instrument/CollisionModel/instrumentCollisionState1" stiffness="10" viscosity="0" />
-        <VectorSpringForceField template="Vec3d" object1="@Omni/RefModelRight/instrumentRefState2" object2="@Instrument/RefModelRight/instrumentCollisionState2" stiffness="10" viscosity="0" />
-        <VectorSpringForceField template="Vec3d" object1="@Omni/RefModelLeft/instrumentRefState3" object2="@Instrument/RefModelLeft/instrumentCollisionState3" stiffness="10" viscosity="0" />
+        <VectorSpringForceField template="Vec3d" object1="@Omni/RefModel/instrumentRefState1" object2="@Instrument/CollisionModel/instrumentCollisionState1" stiffness="10" viscosity="10" />
+        <VectorSpringForceField template="Vec3d" object1="@Omni/RefModelRight/instrumentRefState2" object2="@Instrument/RefModelRight/instrumentCollisionState2" stiffness="10" viscosity="10" />
+        <VectorSpringForceField template="Vec3d" object1="@Omni/RefModelLeft/instrumentRefState3" object2="@Instrument/RefModelLeft/instrumentCollisionState3" stiffness="10" viscosity="10" />
     </Node>  
 
 </Node>

@@ -64,6 +64,10 @@ public :
     bool addJMInvJtLocal(TMatrix * M, ResMatrixType * result,const JMatrixType * J, SReal fact) override;
     int numStep;
 
+    // Refactorize every N steps. 1=every step (default). Higher values cache
+    // the factorization — valid when K barely changes (small deformations, no gravity).
+    sofa::core::objectmodel::Data<int> d_factorizeEvery;
+
     MatrixInvertData * createInvertData() override {
         return new InvertData();
     }

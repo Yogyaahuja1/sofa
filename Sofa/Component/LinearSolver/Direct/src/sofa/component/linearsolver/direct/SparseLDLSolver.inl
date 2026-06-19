@@ -40,7 +40,10 @@ namespace sofa::component::linearsolver::direct
 
 template<class TMatrix, class TVector, class TThreadManager>
 SparseLDLSolver<TMatrix,TVector,TThreadManager>::SparseLDLSolver()
-    : numStep(0)
+    : d_factorizeEvery(initData(&d_factorizeEvery, 1, "factorizeEvery",
+        "Refactorize every N steps. 1=every step (default). "
+        "Higher values cache the LDL factorization — safe for small deformations."))
+    , numStep(0)
 {}
 
 template <class TMatrix, class TVector, class TThreadManager>
@@ -134,7 +137,13 @@ void SparseLDLSolver<TMatrix, TVector, TThreadManager>::showInvalidSystemMessage
 template<class TMatrix, class TVector, class TThreadManager>
 void SparseLDLSolver<TMatrix,TVector,TThreadManager>::invert(Matrix& M)
 {
-    factorize(M, (InvertData *) this->getMatrixInvertData(&M));
+    const int every = d_factorizeEvery.getValue();
+    // numStep is incremented inside factorize(), so check before calling
+    if (every <= 1 || numStep == 0 || (numStep % every) == 0)
+    {
+        factorize(M, (InvertData *) this->getMatrixInvertData(&M));
+    }
+    // else: reuse cached L, D factors from last factorization — skip refactorize
 }
 
 template <class TMatrix, class TVector, class TThreadManager>

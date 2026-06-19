@@ -1043,6 +1043,27 @@ inline void TetrahedronFEMForceField<DataTypes>::accumulateForceLarge( Vector& f
         computeForce( F, D, _plasticStrains[elementIndex], materialsStiffnesses[elementIndex], strainDisplacements[elementIndex] );
         for(int i=0; i<12; i+=3)
             f[index[i/3]] += rotations[elementIndex] * Deriv( F[i], F[i+1],  F[i+2] );
+
+        if(!_lastStrain.empty())
+        {
+            const StrainDisplacement& J = strainDisplacements[elementIndex];
+            VoigtTensor& es = _lastStrain[elementIndex];
+            es[0] = J[ 0][0]*D[0]+J[ 3][0]*D[3]+J[ 6][0]*D[6]+J[ 9][0]*D[9];
+            es[1] = J[ 1][1]*D[1]+J[ 4][1]*D[4]+J[ 7][1]*D[7]+J[10][1]*D[10];
+            es[2] = J[ 2][2]*D[2]+J[ 5][2]*D[5]+J[ 8][2]*D[8]+J[11][2]*D[11];
+            es[3] = J[ 0][3]*D[0]+J[ 1][3]*D[1]+J[ 3][3]*D[3]+J[ 4][3]*D[4]+J[ 6][3]*D[6]+J[ 7][3]*D[7]+J[ 9][3]*D[9]+J[10][3]*D[10];
+            es[4] = J[ 1][4]*D[1]+J[ 2][4]*D[2]+J[ 4][4]*D[4]+J[ 5][4]*D[5]+J[ 7][4]*D[7]+J[ 8][4]*D[8]+J[10][4]*D[10]+J[11][4]*D[11];
+            es[5] = J[ 0][5]*D[0]+J[ 2][5]*D[2]+J[ 3][5]*D[3]+J[ 5][5]*D[5]+J[ 6][5]*D[6]+J[ 8][5]*D[8]+J[ 9][5]*D[9]+J[11][5]*D[11];
+
+            const MaterialStiffness& K = materialsStiffnesses[elementIndex];
+            VoigtTensor& ss = _lastStress[elementIndex];
+            ss[0] = K[0][0]*es[0]+K[0][1]*es[1]+K[0][2]*es[2];
+            ss[1] = K[1][0]*es[0]+K[1][1]*es[1]+K[1][2]*es[2];
+            ss[2] = K[2][0]*es[0]+K[2][1]*es[1]+K[2][2]*es[2];
+            ss[3] = K[3][3]*es[3];
+            ss[4] = K[4][4]*es[4];
+            ss[5] = K[5][5]*es[5];
+        }
     }
     else if( _plasticMaxThreshold.getValue() <= 0 )
     {
@@ -1545,6 +1566,8 @@ inline void TetrahedronFEMForceField<DataTypes>::reinit()
     strainDisplacements.resize( _indexedElements->size() );
     materialsStiffnesses.resize(_indexedElements->size() );
     _plasticStrains.resize(     _indexedElements->size() );
+    _lastStrain.resize(         _indexedElements->size() );
+    _lastStress.resize(         _indexedElements->size() );
     if(_assembling.getValue())
     {
         _stiffnesses.resize( _initialPoints.getValue().size()*3 );

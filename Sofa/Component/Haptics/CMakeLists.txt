@@ -20,14 +20,23 @@ set(SOURCE_FILES
     ${SOFACOMPONENTHAPTICS_SOURCE_DIR}/LCPForceFeedback.cpp
     ${SOFACOMPONENTHAPTICS_SOURCE_DIR}/NullForceFeedback.cpp
     ${SOFACOMPONENTHAPTICS_SOURCE_DIR}/NullForceFeedbackT.cpp
+    /home/yogyaahuja/sofa/pinn_project/cpp/PINNPredictor.cpp
 )
 
 sofa_find_package(Sofa.Simulation.Core REQUIRED)
 sofa_find_package(Sofa.Component.Constraint.Lagrangian.Solver REQUIRED)
+sofa_find_package(Sofa.Component.SolidMechanics.FEM.Elastic REQUIRED)
+
+list(APPEND CMAKE_PREFIX_PATH "/home/yogyaahuja/.local/lib/python3.12/site-packages/torch/share/cmake")
+set(CMAKE_CUDA_ARCHITECTURES "86" CACHE STRING "" FORCE)
+find_package(Torch REQUIRED)
 
 add_library(${PROJECT_NAME} SHARED ${HEADER_FILES} ${SOURCE_FILES})
 target_link_libraries(${PROJECT_NAME} PUBLIC Sofa.Simulation.Core)
 target_link_libraries(${PROJECT_NAME} PUBLIC Sofa.Component.Constraint.Lagrangian.Solver)
+target_link_libraries(${PROJECT_NAME} PUBLIC Sofa.Component.SolidMechanics.FEM.Elastic)
+target_link_libraries(${PROJECT_NAME} PUBLIC ${TORCH_LIBRARIES})
+target_include_directories(${PROJECT_NAME} PRIVATE ${TORCH_INCLUDE_DIRS})
 
 sofa_create_package_with_targets(
     PACKAGE_NAME ${PROJECT_NAME}

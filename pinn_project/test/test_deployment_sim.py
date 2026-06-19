@@ -46,10 +46,10 @@ device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 # ── LOAD MODEL ────────────────────────────────────────────────────────────────
 print("Loading model...")
 ckpt   = torch.load(MODEL_PATH, map_location=device, weights_only=False)
-X_mean = ckpt['X_mean']
-X_std  = ckpt['X_std']
-Y_mean = ckpt['Y_mean']
-Y_std  = ckpt['Y_std']
+X_mean = ckpt['X_mean'].cpu().numpy() if hasattr(ckpt['X_mean'], 'numpy') else np.array(ckpt['X_mean'])
+X_std  = ckpt['X_std'].cpu().numpy()  if hasattr(ckpt['X_std'],  'numpy') else np.array(ckpt['X_std'])
+Y_mean = ckpt['Y_mean'].cpu().numpy() if hasattr(ckpt['Y_mean'], 'numpy') else np.array(ckpt['Y_mean'])
+Y_std  = ckpt['Y_std'].cpu().numpy()  if hasattr(ckpt['Y_std'],  'numpy') else np.array(ckpt['Y_std'])
 n_in   = ckpt['n_inputs']
 n_out  = ckpt['n_output']
 n_force= ckpt['n_force']
@@ -175,7 +175,7 @@ def build_X(row, buf_ddx, buf_ddy, buf_ddz,
     for lag in range(1, N_LAGS + 1):
         src = max(0, row - lag)
         if sess[src] != sess[row]:
-            ss = int(np.searchsorted(sess, sess[row]))
+            ss = int(np.where(sess == sess[row])[0][0])
             th.extend([tool_x[ss], tool_y[ss], tool_z[ss], 0, 0, 0, 0, 0, 0])
         else:
             th.extend([

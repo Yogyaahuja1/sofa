@@ -158,6 +158,8 @@ protected:
 
     /// the solution vector is stored for warm-start
     core::behavior::MultiVecDeriv x;
+    sofa::core::objectmodel::Data<int> d_rebuildMatrixEvery;
+    int m_solveStep {0};
 
 };
 

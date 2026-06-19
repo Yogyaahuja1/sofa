@@ -30,6 +30,8 @@
 #include <Geomagic/GeomagicVisualModel.h>
 #include <thread>
 #include <chrono>
+#include <fstream>
+#include <sstream>
 
 namespace sofa::component::controller
 {
@@ -84,6 +86,29 @@ HDCallbackCode HDCALLBACK stateCallback(void * userData)
     hdGetDoublev(HD_CURRENT_JOINT_ANGLES,driver->m_hapticData.angle1);
     hdGetDoublev(HD_CURRENT_GIMBAL_ANGLES,driver->m_hapticData.angle2);
 
+    // ── REPLAY: override live device position with recorded trajectory ──────────
+    if (driver->m_replayMode)
+    {
+        if (driver->m_replayIndex >= driver->m_replayTrajectory.size())
+        {
+            // Trajectory finished — zero force and stop
+            double zero[3] = {0, 0, 0};
+            hdSetDoublev(HD_CURRENT_FORCE, zero);
+            hdEndFrame(driver->m_hHD);
+            return HD_CALLBACK_CONTINUE;
+        }
+        const auto& pt = driver->m_replayTrajectory[driver->m_replayIndex];
+        // Convert world coords → device raw transform (inverse of updatePosition math)
+        // world = posBase + orientBase.rotate(pos * scale)  where pos = transform[12..14] * 0.1
+        Vector3 world(pt[0], pt[1], pt[2]);
+        Vector3 pos_local = driver->d_orientationBase.getValue().inverseRotate(
+            world - driver->d_positionBase.getValue()) / driver->d_scale.getValue();
+        driver->m_hapticData.transform[12] = pos_local[0] / 0.1;
+        driver->m_hapticData.transform[13] = pos_local[1] / 0.1;
+        driver->m_hapticData.transform[14] = pos_local[2] / 0.1;
+    }
+    // ────────────────────────────────────────────────────────────────────────────
+
     // Will only update the device position data and don't retrieve forceFeeedback
     if (!driver->m_simulationStarted) {
         hdEndFrame(driver->m_hHD);
@@ -101,6 +126,18 @@ HDCallbackCode HDCALLBACK stateCallback(void * userData)
         Vector3 pos_in_world = driver->d_positionBase.getValue() + driver->d_orientationBase.getValue().rotate(pos*driver->d_scale.getValue());
 
         driver->m_forceFeedback->computeForce(pos_in_world[0],pos_in_world[1],pos_in_world[2], 0, 0, 0, 0, currentForce[0], currentForce[1], currentForce[2]);
+
+        // ── REPLAY: log force output and advance index ────────────────────────
+        if (driver->m_replayMode)
+        {
+            if (driver->m_replayLog)
+                std::fprintf(driver->m_replayLog, "%.6f,%.6f,%.6f,%.6f,%.6f,%.6f\n",
+                    pos_in_world[0], pos_in_world[1], pos_in_world[2],
+                    currentForce[0], currentForce[1], currentForce[2]);
+            driver->m_replayIndex++;
+        }
+        // ─────────────────────────────────────────────────────────────────────
+
         driver->m_isInContact = false;
         for (int i=0; i<3; i++)
             if (currentForce[i] != 0.0)
@@ -170,6 +207,8 @@ GeomagicDriver::GeomagicDriver()
     , d_button_1(initData(&d_button_1,"button1","Button state 1"))
     , d_button_2(initData(&d_button_2,"button2","Button state 2"))    
     , l_forceFeedback(initLink("forceFeedBack", "link to the forceFeedBack component, if not set will search through graph and take first one encountered."))
+    , d_replayFile(initData(&d_replayFile, std::string(""), "replayFile", "CSV with recorded path (tool_x,tool_y,tool_z columns). Leave empty for live device mode."))
+    , d_replayOutput(initData(&d_replayOutput, std::string(""), "replayOutput", "CSV to write force log during replay. Leave empty to skip."))
     , m_simulationStarted(false)
     , m_isInContact(false)
     , m_hHD(HD_INVALID_HANDLE)
@@ -184,6 +223,7 @@ GeomagicDriver::GeomagicDriver()
 GeomagicDriver::~GeomagicDriver()
 {
     clearDevice();
+    if (m_replayLog) { std::fclose(m_replayLog); m_replayLog = nullptr; }
 }
 
 
@@ -207,7 +247,91 @@ void GeomagicDriver::init()
     }
 
 
-    // 2- init device and Hd scheduler
+    // 2- Load replay trajectory if replayFile is set
+    const std::string& replayPath = d_replayFile.getValue();
+    if (!replayPath.empty())
+    {
+        std::ifstream rf(replayPath);
+        if (!rf.is_open())
+        {
+            msg_error() << "replayFile '" << replayPath << "' could not be opened.";
+        }
+        else
+        {
+            // Parse header to find tool_x / tool_y / tool_z column indices
+            std::string header;
+            std::getline(rf, header);
+            std::vector<std::string> cols;
+            std::stringstream hss(header);
+            std::string col;
+            while (std::getline(hss, col, ',')) cols.push_back(col);
+
+            int xi = -1, yi = -1, zi = -1;
+            for (int i = 0; i < (int)cols.size(); ++i)
+            {
+                if (cols[i] == "tool_x") xi = i;
+                else if (cols[i] == "tool_y") yi = i;
+                else if (cols[i] == "tool_z") zi = i;
+            }
+
+            if (xi < 0 || yi < 0 || zi < 0)
+            {
+                msg_error() << "replayFile must have columns tool_x, tool_y, tool_z. Found: " << header;
+            }
+            else
+            {
+                std::string line;
+                while (std::getline(rf, line))
+                {
+                    std::stringstream lss(line);
+                    std::string cell;
+                    std::vector<std::string> cells;
+                    while (std::getline(lss, cell, ',')) cells.push_back(cell);
+                    if ((int)cells.size() > std::max({xi, yi, zi}))
+                    {
+                        std::array<double,3> pt {
+                            std::stod(cells[xi]),
+                            std::stod(cells[yi]),
+                            std::stod(cells[zi])
+                        };
+                        m_replayTrajectory.push_back(pt);
+                    }
+                }
+                m_replayMode = true;
+                msg_info() << "Replay mode: loaded " << m_replayTrajectory.size() << " positions from " << replayPath;
+
+                // Pre-initialize posDevice to the first trajectory point so that Omni/DOFs
+                // (linked via @GeomagicDevice.positionDevice) starts at the correct position
+                // before the first simulation step. Without this, Omni/DOFs defaults to SOFA
+                // origin and the VectorSpringForceField creates a large initial tension.
+                if (!m_replayTrajectory.empty())
+                {
+                    auto& posDevice = *d_posDevice.beginEdit();
+                    posDevice.getCenter() = Vec3(m_replayTrajectory[0][0],
+                                                 m_replayTrajectory[0][1],
+                                                 m_replayTrajectory[0][2]);
+                    d_posDevice.endEdit();
+                    msg_info() << "[REPLAY] Pre-initialized posDevice to first trajectory point ("
+                               << m_replayTrajectory[0][0] << ", "
+                               << m_replayTrajectory[0][1] << ", "
+                               << m_replayTrajectory[0][2] << ")";
+                }
+            }
+        }
+
+        // Open force log output
+        const std::string& outPath = d_replayOutput.getValue();
+        if (!outPath.empty())
+        {
+            m_replayLog = std::fopen(outPath.c_str(), "w");
+            if (m_replayLog)
+                std::fprintf(m_replayLog, "tool_x,tool_y,tool_z,fx,fy,fz\n");
+            else
+                msg_warning() << "Could not open replayOutput '" << outPath << "' for writing.";
+        }
+    }
+
+    // 3- init device and Hd scheduler
     if (d_manualStart.getValue() == false)
         initDevice();
 }
@@ -374,6 +498,50 @@ void GeomagicDriver::updatePosition()
 
     //copy the position of the tool
     Vec3 position;
+
+    // In replay mode without a real haptic device the HD scheduler never fires,
+    // so m_simuData is never updated from the CSV positions set in the haptic callback.
+    // Drive positionDevice directly from the replay trajectory in the SOFA thread instead.
+    if (m_replayMode && m_replayIndex < m_replayTrajectory.size())
+    {
+        const auto& pt = m_replayTrajectory[m_replayIndex];
+        posDevice.getCenter() = Vec3(pt[0], pt[1], pt[2]);
+
+        // ── DIAG-1: confirm CSV positions are reaching posDevice ─────────────
+        if (m_replayIndex < 3 || m_replayIndex % 500 == 0)
+            std::cerr << "[REPLAY] step " << m_replayIndex
+                      << " posDevice=(" << pt[0] << "," << pt[1] << "," << pt[2] << ")"
+                      << "  stride=" << m_replayStepSkip << "/" << REPLAY_SIM_STRIDE
+                      << "  totalRows=" << m_replayTrajectory.size() << std::endl;
+
+        // Training CSV was sampled every 5 sim steps (dt_since_last=0.005s, dt=0.001s).
+        // Advance index only every REPLAY_SIM_STRIDE sim steps to match training sim rate.
+        ++m_replayStepSkip;
+        if (m_replayStepSkip >= REPLAY_SIM_STRIDE)
+        {
+            m_replayStepSkip = 0;
+            ++m_replayIndex;
+            if (m_replayIndex == m_replayTrajectory.size())
+                std::cerr << "[REPLAY] FINISHED — all " << m_replayTrajectory.size()
+                          << " rows replayed" << std::endl;
+        }
+
+        d_posDevice.endEdit();
+        d_angle.endEdit();
+        return;
+    }
+    if (m_replayMode)
+    {
+        static bool s_replayExhaustedLogged = false;
+        if (!s_replayExhaustedLogged)
+        {
+            std::cerr << "[REPLAY] FINISHED: all " << m_replayTrajectory.size()
+                      << " rows replayed. posDevice frozen at last position." << std::endl;
+            s_replayExhaustedLogged = true;
+        }
+        return;  // freeze at last position, don't spam
+    }
+
     position[0] = m_simuData.transform[12+0] * 0.1;
     position[1] = m_simuData.transform[12+1] * 0.1;
     position[2] = m_simuData.transform[12+2] * 0.1;
@@ -513,6 +681,14 @@ void GeomagicDriver::handleEvent(core::objectmodel::Event *event)
     {
         if (sofa::core::objectmodel::BaseObject::d_componentState.getValue() != sofa::core::objectmodel::ComponentState::Valid)
             return;
+
+        // In replay mode: drive positions directly from CSV even without a real device
+        if (m_replayMode)
+        {
+            m_simulationStarted = true;
+            updatePosition();
+            return;
+        }
 
         if (m_hStateHandles.size() && m_hStateHandles[0] == HD_INVALID_HANDLE)
             return;

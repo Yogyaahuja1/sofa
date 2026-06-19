@@ -30,6 +30,10 @@
 //force feedback
 #include <sofa/component/haptics/ForceFeedback.h>
 
+#include <vector>
+#include <array>
+#include <cstdio>
+
 #if GEOMAGIC_HAVE_OPENHAPTICS
 #include <HD/hd.h>
 #endif
@@ -120,11 +124,15 @@ public:
     Data<type::Vec6> d_angle; ///< Angluar values of joint (rad)
     Data<bool> d_button_1; ///< Button state 1
     Data<bool> d_button_2; ///< Button state 2
-    
+
     // Pointer to the forceFeedBack component
     sofa::component::haptics::ForceFeedback::SPtr m_forceFeedback;
     // link to the forceFeedBack component, if not set will search through graph and take first one encountered
     SingleLink<GeomagicDriver, sofa::component::haptics::ForceFeedback, BaseLink::FLAG_STOREPATH | BaseLink::FLAG_STRONGLINK> l_forceFeedback;
+
+    // ── Path replay ─────────────────────────────────────────────────────────────
+    Data<std::string> d_replayFile;   ///< CSV with recorded path (needs tool_x,tool_y,tool_z columns). Empty = live device.
+    Data<std::string> d_replayOutput; ///< CSV to write force log during replay. Empty = no log.
 
     /// This static bool is used to know if HD scheduler is already running. No mechanism provided by Hd lib.
     inline static bool s_schedulerRunning = false;
@@ -150,6 +158,14 @@ public:
     DeviceData m_simuData; ///< data structure used by SOFA loop, values are copied from @sa m_hapticData
     SHHD m_hHD; ///< ID the device
     std::vector< SHDSchedulerHandle > m_hStateHandles; ///< List of ref to the workers scheduled
+
+    // ── Replay state (only written in init, only read from HD scheduler thread) ─
+    bool   m_replayMode     {false};
+    size_t m_replayIndex    {0};
+    int    m_replayStepSkip {0};  // counts sim steps; CSV row advances every REPLAY_SIM_STRIDE
+    static constexpr int REPLAY_SIM_STRIDE = 5; // training: 5ms sim per CSV row (dt=0.001s)
+    std::vector<std::array<double,3>> m_replayTrajectory;
+    FILE*  m_replayLog   {nullptr};
 };
 
 } // namespace sofa::component::controller

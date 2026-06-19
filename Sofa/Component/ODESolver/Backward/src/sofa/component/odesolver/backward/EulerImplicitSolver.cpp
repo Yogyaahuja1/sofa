@@ -45,6 +45,8 @@ EulerImplicitSolver::EulerImplicitSolver()
     , d_trapezoidalScheme( initData(&d_trapezoidalScheme,false,"trapezoidalScheme","Optional: use the trapezoidal scheme instead of the implicit Euler scheme and get second order accuracy in time") )
     , f_solveConstraint( initData(&f_solveConstraint,false,"solveConstraint","Apply ConstraintSolver (requires a ConstraintSolver in the same node as this solver, disabled by by default for now)") )
     , d_threadSafeVisitor(initData(&d_threadSafeVisitor, false, "threadSafeVisitor", "If true, do not use realloc and free visitors in fwdInteractionForceField."))
+    , d_rebuildMatrixEvery(initData(&d_rebuildMatrixEvery, 1, "rebuildMatrixEvery",
+    "Rebuild M+hK matrix every N steps. 1=every step. Higher=reuse cached matrix."))
 {
 }
 
@@ -152,12 +154,9 @@ void EulerImplicitSolver::solve(const core::ExecParams* params, SReal dt, sofa::
     core::behavior::MultiMatrix<simulation::common::MechanicalOperations> matrix(&mop);
 
     if (firstOrder)
-        matrix.setSystemMBKMatrix(MechanicalMatrix(1,0,-h*tr)); //MechanicalMatrix::K * (-h*tr) + MechanicalMatrix::M;
+        matrix.setSystemMBKMatrix(MechanicalMatrix(1,0,-h*tr));
     else
-        matrix.setSystemMBKMatrix(MechanicalMatrix(1+tr*h*f_rayleighMass.getValue(),-tr*h,-tr*h*(h+f_rayleighStiffness.getValue()))); // MechanicalMatrix::K * (-tr*h*(h+f_rayleighStiffness.getValue())) + MechanicalMatrix::B * (-tr*h) + MechanicalMatrix::M * (1+tr*h*f_rayleighMass.getValue());
-
-    msg_info() << "EulerImplicitSolver, matrix = " << (MechanicalMatrix::K * (-h * (h + f_rayleighStiffness.getValue())) + MechanicalMatrix::M * (1 + h * f_rayleighMass.getValue())) << " = " << matrix;
-    msg_info() << "EulerImplicitSolver, Matrix K = " << MechanicalMatrix::K;
+        matrix.setSystemMBKMatrix(MechanicalMatrix(1+tr*h*f_rayleighMass.getValue(),-tr*h,-tr*h*(h+f_rayleighStiffness.getValue())));
 
 #ifdef SOFA_DUMP_VISITOR_INFO
     simulation::Visitor::printNode("SystemSolution");
