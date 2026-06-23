@@ -1,0 +1,123 @@
+<!-- Mechanical TriangularFEMForceField Example with Geomagic Haptic Device -->
+<Node name="root" dt="0.05" gravity="0 0 0" showBoundingTree="0">
+
+    <Node name="plugins">
+        <RequiredPlugin name="Geomagic"/> <!-- Needed to use components [GeomagicDriver] -->
+        <RequiredPlugin name="Sofa.Component.AnimationLoop"/> <!-- Needed to use components [FreeMotionAnimationLoop] -->
+        <RequiredPlugin name="Sofa.Component.Collision.Detection.Algorithm"/> <!-- Needed to use components [BVHNarrowPhase BruteForceBroadPhase CollisionPipeline] -->
+        <RequiredPlugin name="Sofa.Component.Collision.Detection.Intersection"/> <!-- Needed to use components [LocalMinDistance] -->
+        <RequiredPlugin name="Sofa.Component.Collision.Geometry"/> <!-- Needed to use components [LineCollisionModel PointCollisionModel TriangleCollisionModel] -->
+        <RequiredPlugin name="Sofa.Component.Collision.Response.Contact"/> <!-- Needed to use components [CollisionResponse] -->
+        <RequiredPlugin name="Sofa.Component.Constraint.Lagrangian.Correction"/> <!-- Needed to use components [PrecomputedConstraintCorrection UncoupledConstraintCorrection] -->
+        <RequiredPlugin name="Sofa.Component.Constraint.Lagrangian.Solver"/> <!-- Needed to use components [LCPConstraintSolver] -->
+        <RequiredPlugin name="Sofa.Component.Constraint.Projective"/> <!-- Needed to use components [FixedConstraint] -->
+        <RequiredPlugin name="Sofa.Component.Controller"/> <!-- Needed to use components [MechanicalStateController] -->
+        <RequiredPlugin name="Sofa.Component.Haptics"/> <!-- Needed to use components [LCPForceFeedback] -->
+        <RequiredPlugin name="Sofa.Component.IO.Mesh"/> <!-- Needed to use components [MeshGmshLoader MeshOBJLoader] -->
+        <RequiredPlugin name="Sofa.Component.LinearSolver.Iterative"/> <!-- Needed to use components [CGLinearSolver] -->
+        <RequiredPlugin name="Sofa.Component.Mapping.Linear"/> <!-- Needed to use components [BarycentricMapping IdentityMapping] -->
+        <RequiredPlugin name="Sofa.Component.Mapping.NonLinear"/> <!-- Needed to use components [RigidMapping] -->
+        <RequiredPlugin name="Sofa.Component.Mass"/> <!-- Needed to use components [DiagonalMass UniformMass] -->
+        <RequiredPlugin name="Sofa.Component.ODESolver.Backward"/> <!-- Needed to use components [EulerImplicitSolver] -->
+        <RequiredPlugin name="Sofa.Component.SolidMechanics.FEM.Elastic"/> <!-- Needed to use components [TriangularFEMForceField] -->
+        <RequiredPlugin name="Sofa.Component.SolidMechanics.Spring"/> <!-- Needed to use components [VectorSpringForceField] -->
+        <RequiredPlugin name="Sofa.Component.StateContainer"/> <!-- Needed to use components [MechanicalObject] -->
+        <RequiredPlugin name="Sofa.Component.Topology.Container.Constant"/> <!-- Needed to use components [MeshTopology] -->
+        <RequiredPlugin name="Sofa.Component.Topology.Container.Dynamic"/> <!-- Needed to use components [TriangleSetGeometryAlgorithms TriangleSetTopologyContainer TriangleSetTopologyModifier] -->
+        <RequiredPlugin name="Sofa.Component.Visual"/> <!-- Needed to use components [VisualStyle] -->
+        <RequiredPlugin name="Sofa.GL.Component.Rendering3D"/> <!-- Needed to use components [OglModel] -->
+        <RequiredPlugin name="MultiThreading"/>
+    </Node>
+
+    <VisualStyle displayFlags="showBehaviorModels showVisual" />
+
+    <!-- Collision pipeline (replaces DefaultAnimationLoop for constraint-based haptics) -->
+<DefaultVisualManagerLoop />
+<CollisionPipeline name="pipeline" depth="6" verbose="0"/>
+<ParallelBruteForceBroadPhase/>
+<ParallelBVHNarrowPhase/>
+<CollisionResponse name="response" response="FrictionContactConstraint" />
+<LocalMinDistance name="proximity" alarmDistance="0.1" contactDistance="0.05" angleCone="0.0" />
+<FreeMotionAnimationLoop/>
+
+<GenericConstraintSolver resolutionMethod="UnbuildGaussSeidel" tolerance="1e-5" maxIt="200" multithreading="true"/>
+    <LCPConstraintSolver tolerance="0.001" maxIt="1000"/>
+
+    <!-- Geomagic haptic device driver -->
+    <GeomagicDriver name="GeomagicDevice" deviceName="Default Device" scale="50" drawDeviceFrame="1"
+                    positionBase="0 0 0" drawDevice="0" orientationBase="0 0.707 0 -0.707" />
+
+    <!-- Deformable square mesh with TriangularFEM -->
+    <Node name="SquareGravity">
+        <EulerImplicitSolver name="cg_odesolver" printLog="false" rayleighStiffness="0.1" rayleighMass="0.1" />
+        <CGLinearSolver iterations="25" name="linear solver" tolerance="1.0e-9" threshold="1.0e-9" />
+        <MeshGmshLoader filename="mesh/square3.msh" name="loader" />
+        <MechanicalObject src="@loader" name="DOFs" scale3d="100 100 0" />
+        <TriangleSetTopologyContainer src="@loader" name="Container" />
+        <TriangleSetTopologyModifier name="Modifier" />
+        <TriangleSetGeometryAlgorithms name="GeomAlgo" template="Vec3" />
+        <DiagonalMass massDensity="0.005" />
+        <FixedConstraint indices="0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 39 40 59 60 79 80 99 100 119 120 139 140 159 160 179 180 199 200 219 220 239 240 259 260 279 280 299 300 319 320 339 340 359 360 379 380 381 382 383 384 385 386 387 388 389 390 391 392 393 394 395 396 397 398 399" />
+        <TriangularFEMForceField name="FEM" youngModulus="600" poissonRatio="0.3" method="large" />
+        <PrecomputedConstraintCorrection recompute="true"/>
+
+        <!-- Visual model -->
+        <Node name="VisuA">
+            <OglModel name="Visual" color="yellow" />
+            <IdentityMapping template="Vec3,Vec3" name="visualMapping" input="@../DOFs" output="@Visual" />
+        </Node>
+
+        <!-- Collision surface mapped to the deformable DOFs -->
+        <Node name="CollisionSurface">
+            <MechanicalObject name="collisionDOFs" src="@../loader" scale3d="100 100 10" />
+            <TriangleSetTopologyContainer src="@../loader" name="CollisionContainer" />
+            <TriangleSetTopologyModifier name="CollisionModifier" />
+            <TriangleSetGeometryAlgorithms name="CollisionGeomAlgo" template="Vec3" />
+            <TriangleCollisionModel contactStiffness="10" />
+            <LineCollisionModel contactStiffness="10" />
+            <PointCollisionModel contactStiffness="10" />
+            <BarycentricMapping name="collision mapping" input="@../DOFs" output="@collisionDOFs" />
+        </Node>
+    </Node>
+
+    <!-- Omni node: reads position from GeomagicDevice and drives the instrument -->
+    <Node name="Omni">
+        <MechanicalObject template="Rigid3d" name="DOFs" position="@GeomagicDevice.positionDevice"/>
+        <MechanicalStateController template="Rigid3d" listening="true" mainDirection="-1.0 0.0 0.0" handleEventTriggersUpdate="true"/>
+        <Node name="RefModel">
+            <MeshOBJLoader filename="Demos/Dentistry/data/mesh/dental_instrument_centerline.obj" name="loader" scale="50"/>
+            <MeshTopology src="@loader" />
+            <MechanicalObject src="@loader" name="instrumentRefState" ry="-180" rz="-90" dz="175" dx="-15" />
+            <RigidMapping />
+        </Node>
+    </Node>
+
+    <!-- Instrument node: haptic tool that interacts with the deformable square -->
+    <Node name="Instrument">
+        <EulerImplicitSolver name="ODE solver" rayleighStiffness="0.05" rayleighMass="1.0" />
+        <CGLinearSolver name="linear solver" iterations="25" tolerance="1e-10" threshold="10e-10" />
+        <MechanicalObject name="instrumentState" template="Rigid3d" />
+        <UniformMass name="mass" totalMass="1.0" />
+        <LCPForceFeedback activate="true" forceCoef="1.0"/> <!-- Compute force-feedback for the device -->
+        <UncoupledConstraintCorrection/>
+        <Node name="VisualModel">
+            <MeshOBJLoader name="meshLoader_1" filename="Demos/Dentistry/data/mesh/dental_instrument.obj" scale="50" handleSeams="1" />
+            <OglModel name="InstrumentVisualModel" src="@meshLoader_1" color="1.0 0.2 0.2 1.0" ry="-180" rz="-90" dz="175" dx="-15"/>
+            <RigidMapping name="MM->VM mapping" input="@instrumentState" output="@InstrumentVisualModel" />
+        </Node>
+        <Node name="CollisionModel">
+            <MeshOBJLoader filename="Demos/Dentistry/data/mesh/dental_instrument_centerline.obj" name="loader" scale="50"/>
+            <MeshTopology src="@loader" />
+            <MechanicalObject src="@loader" name="instrumentCollisionState" ry="-180" rz="-90" dz="175" dx="-15" />
+            <LineCollisionModel contactStiffness="100" />
+            <PointCollisionModel contactStiffness="100" />
+            <RigidMapping name="MM->CM mapping" input="@instrumentState" output="@instrumentCollisionState" />
+        </Node>
+        <!-- Spring coupling between Omni reference pose and actual instrument state -->
+        <VectorSpringForceField template="Vec3d"
+            object1="@Omni/RefModel/instrumentRefState"
+            object2="@Instrument/CollisionModel/instrumentCollisionState"
+            stiffness="10000" viscosity="0" />
+    </Node>
+
+</Node>
