@@ -102,7 +102,7 @@ void DataCollector::init()
         auto* surfNode = liverNode->getChild("Surf");
         if (surfNode)
             m_contactDofs = dynamic_cast<sofa::core::behavior::MechanicalState<sofa::defaulttype::Vec3Types>*>(
-                surfNode->getObject("spheres"));
+                surfNode->getObject("surfDofs"));
     }
     m_nSurfaceVerts = m_contactDofs ? (int)m_contactDofs->getSize() : 0;
 

@@ -109,7 +109,8 @@ public:
     Data<Quat> d_orientationBase; ///< Input Orientation of the device base in the scene world coordinates
     Data<Quat> d_orientationTool; ///< Input Orientation of the tool
     Data<SReal> d_scale; ///< Default scale applied to the device Coordinates
-    Data<SReal> d_forceScale; ///< Default forceScale applied to the force feedback. 
+    Data<SReal> d_forceScale; ///< Default forceScale applied to the force feedback.
+    Data<SReal> d_maxLinearSpeed; ///< Max device speed (scene units/s). Clamps posDevice displacement per step to avoid spring-coupling explosions on fast hand moves. <=0 disables.
     Data<SReal> d_maxInputForceFeedback; ///< Maximum value of the normed input force feedback for device security
     Data<Vec3> d_inputForceFeedback; ///< Input force feedback in case of no LCPForceFeedback is found (manual setting)
 
@@ -160,10 +161,15 @@ public:
     std::vector< SHDSchedulerHandle > m_hStateHandles; ///< List of ref to the workers scheduled
 
     // ── Replay state (only written in init, only read from HD scheduler thread) ─
+    Vec3 m_lastDevicePos       {0,0,0};
+    bool m_hasLastDevicePos    {false};
+
     bool   m_replayMode     {false};
     size_t m_replayIndex    {0};
     int    m_replayStepSkip {0};  // counts sim steps; CSV row advances every REPLAY_SIM_STRIDE
-    static constexpr int REPLAY_SIM_STRIDE = 5; // training: 5ms sim per CSV row (dt=0.001s)
+    // Must match DataCollector's collectEvery in the data-collection scene exactly
+    // (currently collectEvery="3" at dt=0.005s -> 1 CSV row = 3 sim steps).
+    static constexpr int REPLAY_SIM_STRIDE = 3;
     std::vector<std::array<double,3>> m_replayTrajectory;
     FILE*  m_replayLog   {nullptr};
 };

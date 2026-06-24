@@ -128,6 +128,9 @@ VectorSpringForceField<DataTypes>::VectorSpringForceField(MechanicalState* _obje
     , m_filename( initData(&m_filename,std::string(""),"filename","File name from which the spring informations are loaded") )
     , m_stiffness( initData(&m_stiffness,SReal(1.0),"stiffness","Default edge stiffness used in absence of file information") )
     , m_viscosity( initData(&m_viscosity, SReal(1.0),"viscosity","Default edge viscosity used in absence of file information") )
+    , d_maxForce( initData(&d_maxForce, SReal(0.0), "maxForce",
+        "Saturates per-edge spring force magnitude to this value (N). Prevents unbounded "
+        "force build-up under sustained pressing against a rigid obstacle. <=0 disables.") )
     , m_useTopology( initData(&m_useTopology, false, "useTopology", "Activate/Desactivate topology mode of the component (springs on each edge)"))
     , l_topology(initLink("topology", "link to the topology container"))    
     , m_topology(nullptr)
@@ -270,6 +273,14 @@ void VectorSpringForceField<DataTypes>::addForce(const core::MechanicalParams* /
             Deriv relativeVelocity = v2[e[1]]-v1[e[0]];
             force = (squash_vector * s.ks) + (relativeVelocity * s.kd);
 
+            const SReal maxF = d_maxForce.getValue();
+            if (maxF > 0)
+            {
+                const SReal fn = force.norm();
+                if (fn > maxF && fn > 1e-12)
+                    force *= maxF / fn;
+            }
+
             f1[e[0]]+=force;
             f2[e[1]]-=force;
         }
@@ -288,6 +299,14 @@ void VectorSpringForceField<DataTypes>::addForce(const core::MechanicalParams* /
             Deriv squash_vector = current_direction - s.restVector;
             Deriv relativeVelocity = v2[e[1]]-v1[e[0]];
             force = (squash_vector * s.ks) + (relativeVelocity * s.kd);
+
+            const SReal maxF = d_maxForce.getValue();
+            if (maxF > 0)
+            {
+                const SReal fn = force.norm();
+                if (fn > maxF && fn > 1e-12)
+                    force *= maxF / fn;
+            }
 
             f1[e[0]]+=force;
             f2[e[1]]-=force;

@@ -1,7 +1,6 @@
 <?xml version="1.0" ?>
 <Node name="root" dt="0.005" gravity="0 0 0">
 
-    <RequiredPlugin name="PINNDataCollector"/>
     <RequiredPlugin name="Geomagic"/>
     <RequiredPlugin name="Sofa.Component.AnimationLoop"/>
     <RequiredPlugin name="Sofa.Component.Collision.Detection.Algorithm"/>
@@ -41,24 +40,21 @@
     <FreeMotionAnimationLoop/>
     <LCPConstraintSolver tolerance="0.001" maxIt="1000"/>
 
+    <!-- REPLAY mode: deterministic path, no live device needed.
+         usePINN=false on LCPForceFeedback below -> ground truth FEM forces. -->
     <GeomagicDriver name="GeomagicDevice"
         deviceName="Default Device"
         scale="1"
         positionBase="0 0 0"
         orientationBase="0 0.707 0 -0.707"
-        maxLinearSpeed="60"/>
+        maxLinearSpeed="60"
+        replayFile="/home/yogyaahuja/sofa/pinn_project/data/test_path.csv"
+        replayOutput="/home/yogyaahuja/sofa/pinn_project/data/replay_pinn.csv"/>
 
     <!-- ===== LIVER NODE ===== -->
     <Node name="Liver" gravity="0 0 0">
         <EulerImplicitSolver rayleighStiffness="0.1" rayleighMass="0.5"/>
         <SparseLDLSolver factorizeEvery="1" name="directSolver" template="CompressedRowSparseMatrixMat3x3d"/>
-
-        <!-- GlobalSystemMatrixExporter disabled — synchronous 543×543 CSV write was costing fps
-        <GlobalSystemMatrixExporter name="matrix_exporter"
-            filename="/home/yogyaahuja/sofa/pinn_project/data/ax_b/A"
-            format="csv"
-            exportEveryNumberOfSteps="30"/>
-        -->
 
         <MeshGmshLoader name="meshLoader" filename="mesh/liver.msh"/>
         <TetrahedronSetTopologyContainer name="topo" src="@meshLoader"/>
@@ -72,23 +68,12 @@
         <LinearSolverConstraintCorrection/>
         <FixedConstraint indices="3 39 64 112 122 127"/>
 
-        <!-- Data collector — sits inside Liver node so it finds liverDofs automatically -->
-        <!-- Tool node is named "Instrument" with MechanicalObject "instrumentState" (Rigid3d) -->
-        <DataCollector
-            outputFile="/home/yogyaahuja/sofa/pinn_project/data/training_data.csv"
-            collectEvery="3"
-            dumpAxbEvery="0"
-            axbDir="/home/yogyaahuja/sofa/pinn_project/data/ax_b"/>
-
-        <!-- FIX 1: Visu node — OglModel needs its own name, and src= points to the
-             OBJ loader in this node, not the .msh loader from the parent -->
         <Node name="Visu">
             <MeshOBJLoader name="objLoader" filename="mesh/liver-smooth.obj"/>
             <OglModel name="VisualModel" src="@objLoader"/>
             <BarycentricMapping input="@../liverDofs" output="@VisualModel"/>
         </Node>
 
-        <!-- Surf node: triangle-based collision on the liver surface -->
         <Node name="Surf">
             <MeshOBJLoader name="surfLoader" filename="mesh/liver-smooth.obj"/>
             <MechanicalObject name="surfDofs" src="@surfLoader"/>
@@ -102,7 +87,6 @@
         </Node>
     </Node>
 
-    <!-- ===== OMNI: device target, directly referenced by Instrument's RestShapeSpringsForceField ===== -->
     <Node name="Omni">
         <MechanicalObject template="Rigid3d" name="DOFs"
             position="@GeomagicDevice.positionDevice"/>
@@ -110,15 +94,12 @@
             listening="true" mainDirection="-1.0 0.0 0.0"/>
     </Node>
 
-    <!-- ===== INSTRUMENT NODE ===== -->
-    <!-- DataCollector looks for root->getChild("Instrument")->getMechanicalState()
-         which finds instrumentState (Rigid3d) here -->
     <Node name="Instrument">
         <EulerImplicitSolver rebuildMatrixEvery="10" rayleighStiffness="0.01" rayleighMass="1.0"/>
         <CGLinearSolver iterations="25" tolerance="1e-10" threshold="10e-10"/>
-        <MechanicalObject name="instrumentState" template="Rigid3d" position="0 6 0  0 0 0 1"/>
+        <MechanicalObject name="instrumentState" template="Rigid3d" position="-1.270371 3.106339 -2.161702  0 0 0 1"/>
         <UniformMass totalMass="0.5"/>
-        <LCPForceFeedback  name="LCPForceFeedback" template="Rigid3d"  activate="true" forceCoef="0.1" usePINN="false"/>
+        <LCPForceFeedback name="LCPForceFeedback" template="Rigid3d" activate="true" forceCoef="0.1" usePINN="true"/>
         <UncoupledConstraintCorrection/>
 
         <Node name="VisualModel">
@@ -131,25 +112,18 @@
             <RigidMapping input="@../instrumentState" output="@InstrumentVisual"/>
         </Node>
 
-        <!-- Instrument collision against the liver — Line+Point on the centerline mesh -->
         <Node name="CollisionModel">
             <MeshOBJLoader name="loader"
                 filename="Demos/Dentistry/data/mesh/dental_instrument_centerline.obj"/>
             <MeshTopology src="@loader"/>
             <MechanicalObject name="instrumentCollisionState1"
                 ry="-180" rz="-90" dz="3.5" dx="-0.3"/>
-            <!-- Remove contactStiffness — not used with FrictionContactConstraint -->
             <LineCollisionModel/>
             <PointCollisionModel/>
             <RigidMapping input="@../instrumentState"
                 output="@instrumentCollisionState1"/>
         </Node>
 
-        <!-- Virtual coupling: anchor the instrument's single rigid DOF directly to the
-             Omni device target, matching the supervisor's TraingularFEM.scn pattern.
-             Very high stiffness + implicit integration = numerically stable without any
-             force saturation needed (unlike VectorSpringForceField's multi-edge gap,
-             which could grow unbounded under sustained pressing). -->
         <RestShapeSpringsForceField name="rssf"
             stiffness="5000"
             angularStiffness="5000"

@@ -32,7 +32,7 @@ import numpy as np
 import pandas as pd
 from torch.utils.data import DataLoader, TensorDataset
 import matplotlib.pyplot as plt
-from pinn_model import LiverUNet
+from pinn_model import LiverDualAttention
 
 # ============================================================
 # CONFIGURATION
@@ -392,7 +392,7 @@ print(f"  X std min/max: {X_std.min().item():.6f} / {X_std.max().item():.6f}")
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 print(f"\nDevice: {device}")
 
-model = LiverUNet(n_output=N_OUT, n_inputs=N_INPUTS).to(device)
+model = LiverDualAttention(n_output=N_OUT, n_inputs=N_INPUTS).to(device)
 n_params = sum(p.numel() for p in model.parameters())
 print(f"Parameters: {n_params:,}")
 
@@ -410,7 +410,7 @@ history = {'epoch': [], 'total': [], 'force': [], 'deform': []}
 
 best_val_loss = float('inf')
 best_epoch    = 0
-MODEL_BEST    = 'tissue_pinn_force_final_best.pth'
+MODEL_BEST    = 'tissue_pinn_dualattn_best.pth'
 
 print("\nTraining...\n")
 for epoch in range(N_EPOCHS):
@@ -546,8 +546,8 @@ with torch.no_grad():
     axes[1].legend()
 
     plt.tight_layout()
-    plt.savefig('sample_comparison_force_final.png', dpi=150)
-    print("\nSample comparison saved to sample_comparison_force_final.png")
+    plt.savefig('sample_comparison_dualattn.png', dpi=150)
+    print("\nSample comparison saved to sample_comparison_dualattn.png")
 
 # ============================================================
 # STEP 11: SAVE
@@ -570,8 +570,8 @@ torch.save({
     'force_rel_err': force_rel_err.item(),
     'force_rel_err_robust': force_rel_err_robust.item(),
     'deform_rel_err': deform_rel_err.item(),
-}, 'tissue_pinn_force_final.pth')
-print("Model saved to tissue_pinn_force_final.pth")
+}, 'tissue_pinn_dualattn.pth')
+print("Model saved to tissue_pinn_dualattn.pth")
 
 # ============================================================
 # STEP 12: PLOT LOSS CURVES
@@ -591,5 +591,5 @@ plt.bar(['Force Rel L2 %', 'Deform Rel L2 %'],
 plt.title('Validation vs FEM')
 
 plt.tight_layout()
-plt.savefig('training_results_force_final.png', dpi=150)
-print("Plot saved to training_results_force_final.png")
+plt.savefig('training_results_dualattn.png', dpi=150)
+print("Plot saved to training_results_dualattn.png")

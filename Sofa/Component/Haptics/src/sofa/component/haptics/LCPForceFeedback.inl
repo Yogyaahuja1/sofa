@@ -649,19 +649,19 @@ void LCPForceFeedback<DataTypes>::handleEvent(sofa::core::objectmodel::Event *ev
 
                     if (!m_pinnTimerSet)
                     {
-                        m_pinnStartTime = std::chrono::high_resolution_clock::now();
+                        m_pinnStartSimTime = this->getContext()->getTime();
                         m_pinnTimerSet  = true;
                     }
-                    double elapsed = std::chrono::duration<double>(
-                        std::chrono::high_resolution_clock::now() - m_pinnStartTime).count();
+                    double elapsed = this->getContext()->getTime() - m_pinnStartSimTime;
 
-                    // ── FPS TIME-GATE ─────────────────────────────────────────────────────────
-                    // Training was collected at ~69.7 fps (14.5ms per step).
-                    // Replay at 220fps gives dt_pred=22ms instead of training 72ms (-1.84sigma).
-                    // Only call predictForce every 14.5ms to match training fps exactly.
-                    static constexpr double PINN_TARGET_CALL_DT = 0.0145; // 1/69 Hz
-                    const bool pinn_due = (m_lastPINNCallElapsed < 0.0) ||
-                                         (elapsed - m_lastPINNCallElapsed >= PINN_TARGET_CALL_DT);
+                    // ── DETERMINISTIC STEP GATE ────────────────────────────────────────────────
+                    // No clocks at all. Call predictForce once every PINN_CALL_STEP_STRIDE
+                    // AnimateEndEvents — the same step-counting basis DataCollector used
+                    // (collectEvery=3) and GeomagicDriver's replay uses (REPLAY_SIM_STRIDE=3).
+                    // Wall-clock and sim-time elapsed gating both drift/desync from the
+                    // trajectory's actual row-by-row progress; a plain counter cannot.
+                    ++m_pinnStepCounter;
+                    const bool pinn_due = (m_pinnStepCounter % PINN_CALL_STEP_STRIDE) == 0;
 
                     float pfx, pfy, pfz;
                     {

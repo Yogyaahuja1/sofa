@@ -410,7 +410,7 @@ history = {'epoch': [], 'total': [], 'force': [], 'deform': []}
 
 best_val_loss = float('inf')
 best_epoch    = 0
-MODEL_BEST    = 'tissue_pinn_force_final_best.pth'
+MODEL_BEST    = 'tissue_pinn_huber_fair_best.pth'
 
 print("\nTraining...\n")
 for epoch in range(N_EPOCHS):
@@ -420,13 +420,15 @@ for epoch in range(N_EPOCHS):
     for X_batch, Y_batch in loader:
         u_pred = model(X_batch)
 
-        # weighted force loss — upweight high-force samples (rare but critical)
-        pred_f_N = u_pred[:, :N_FORCE] * y_std_f + y_mean_f
-        true_f_N = Y_batch[:, :N_FORCE] * y_std_f + y_mean_f
-        f_mag    = torch.norm(true_f_N, dim=1, keepdim=True).detach()
-        f_weight = 1.0 + f_mag / (f_mag.mean() + 1e-8)
-        L_force  = (f_weight * ((u_pred[:, :N_FORCE] - Y_batch[:, :N_FORCE]) ** 2).mean(dim=1, keepdim=True)).mean()
-        L_deform = torch.mean((u_pred[:, N_FORCE:] - Y_batch[:, N_FORCE:]) ** 2)
+        # Pure Huber test — NO f_weight upweighting here on purpose. f_weight
+        # (upweight high-force samples) and Huber (downweight large-error
+        # gradients) pull in opposite directions; mixing them masks whether
+        # Huber's outlier-robustness actually helps. This isolates Huber alone.
+        HUBER_DELTA = 1.0
+        L_force  = torch.nn.functional.huber_loss(
+            u_pred[:, :N_FORCE], Y_batch[:, :N_FORCE], delta=HUBER_DELTA, reduction='mean')
+        L_deform = torch.nn.functional.huber_loss(
+            u_pred[:, N_FORCE:], Y_batch[:, N_FORCE:], delta=HUBER_DELTA, reduction='mean')
         L = W_FORCE * L_force + W_DEFORM * L_deform
 
         optimizer.zero_grad()
@@ -546,8 +548,8 @@ with torch.no_grad():
     axes[1].legend()
 
     plt.tight_layout()
-    plt.savefig('sample_comparison_force_final.png', dpi=150)
-    print("\nSample comparison saved to sample_comparison_force_final.png")
+    plt.savefig('sample_comparison_huber_fair.png', dpi=150)
+    print("\nSample comparison saved to sample_comparison_huber_fair.png")
 
 # ============================================================
 # STEP 11: SAVE
@@ -570,8 +572,8 @@ torch.save({
     'force_rel_err': force_rel_err.item(),
     'force_rel_err_robust': force_rel_err_robust.item(),
     'deform_rel_err': deform_rel_err.item(),
-}, 'tissue_pinn_force_final.pth')
-print("Model saved to tissue_pinn_force_final.pth")
+}, 'tissue_pinn_huber_fair.pth')
+print("Model saved to tissue_pinn_huber_fair.pth")
 
 # ============================================================
 # STEP 12: PLOT LOSS CURVES
@@ -591,5 +593,5 @@ plt.bar(['Force Rel L2 %', 'Deform Rel L2 %'],
 plt.title('Validation vs FEM')
 
 plt.tight_layout()
-plt.savefig('training_results_force_final.png', dpi=150)
-print("Plot saved to training_results_force_final.png")
+plt.savefig('training_results_huber_fair.png', dpi=150)
+print("Plot saved to training_results_huber_fair.png")

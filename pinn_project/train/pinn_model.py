@@ -254,6 +254,64 @@ class LiverTransformer(nn.Module):
         return self.head(seq.reshape(B, -1))
 
 
+class LagSequenceAttentionAccel(nn.Module):
+    """LagSequenceAttention + a trailing acceleration block (lag1-vs-lag3 velocity
+    difference, computed in the training script and appended at indices 960-962).
+    Validated via correlation test: leading corr(accel, |dF| over next 3 steps)=0.66,
+    the strongest predictive feature found — should help anticipate fast transients
+    before they fully show up in deformation/stress history.
+
+    Input layout (963): same 960 as LagSequenceAttention, plus accel(3) at the tail.
+    """
+    def __init__(self, n_output: int, n_inputs: int = 963, n_lags: int = 5,
+                 embed_dim: int = 128, n_heads: int = 4, n_layers: int = 2):
+        super().__init__()
+        assert n_inputs == 963, "offsets below are hardcoded for the 963-dim layout"
+        self.n_lags = n_lags
+        self.n_global = 15
+        self.tool_hist_off, self.tool_hist_w = 15, 9
+        self.nb_deform_off, self.nb_w = 60, 60
+        self.nb_stress_off = 360
+        self.nb_strain_off = 660
+        self.accel_off = 960
+        token_dim = self.tool_hist_w + 3 * self.nb_w  # 189
+
+        self.token_proj  = nn.Linear(token_dim, embed_dim)
+        self.global_proj = nn.Linear(self.n_global + 3, embed_dim)  # +3 for accel
+        self.pos_embed   = nn.Parameter(torch.randn(1, n_lags + 1, embed_dim) * 0.02)
+
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=embed_dim, nhead=n_heads, dim_feedforward=embed_dim * 4,
+            dropout=0.1, activation='gelu', batch_first=True
+        )
+        self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=n_layers)
+
+        self.head = nn.Sequential(
+            nn.Linear(embed_dim * (n_lags + 1), 512), nn.GELU(),
+            nn.Linear(512, 256), nn.GELU(),
+            nn.Linear(256, n_output)
+        )
+
+    def forward(self, x):
+        B = x.shape[0]
+        global_feat = torch.cat([x[:, :self.n_global], x[:, self.accel_off:self.accel_off+3]], dim=1)
+
+        tokens = []
+        for k in range(self.n_lags):
+            th = x[:, self.tool_hist_off + self.tool_hist_w*k : self.tool_hist_off + self.tool_hist_w*(k+1)]
+            nd = x[:, self.nb_deform_off + self.nb_w*k        : self.nb_deform_off + self.nb_w*(k+1)]
+            ns = x[:, self.nb_stress_off + self.nb_w*k        : self.nb_stress_off + self.nb_w*(k+1)]
+            nr = x[:, self.nb_strain_off + self.nb_w*k        : self.nb_strain_off + self.nb_w*(k+1)]
+            tokens.append(torch.cat([th, nd, ns, nr], dim=1))
+        tokens = torch.stack(tokens, dim=1)  # (B, 5, 189)
+
+        tok_embed  = self.token_proj(tokens)
+        glob_embed = self.global_proj(global_feat).unsqueeze(1)
+        seq = torch.cat([glob_embed, tok_embed], dim=1) + self.pos_embed
+        seq = self.encoder(seq)
+        return self.head(seq.reshape(B, -1))
+
+
 class LiverGNN(nn.Module):
     """Graph conv net over the FEM mesh. Adjacency is derived from the
     stiffness matrix K (nonzero vertex-vertex coupling = mesh edge), so
@@ -300,6 +358,144 @@ class LiverGNN(nn.Module):
             h = self.act(norm(h_new + h))
 
         return self.head(h).reshape(B, -1)
+
+
+class ChannelAttention(nn.Module):
+    """Attention across feature-group 'channels' (tool_hist, nb_deform, nb_stress,
+    nb_realstrain) instead of across time/lag — lets the model learn which feature
+    TYPE to trust most per-sample (e.g. stress proxy vs deformation during a fast
+    transient), complementing sequence attention's per-lag weighting."""
+    def __init__(self, group_dims, embed_dim, n_heads=4):
+        super().__init__()
+        self.proj = nn.ModuleList([nn.Linear(d, embed_dim) for d in group_dims])
+        self.attn = nn.MultiheadAttention(embed_dim, num_heads=n_heads, batch_first=True, dropout=0.1)
+        self.norm = nn.LayerNorm(embed_dim)
+
+    def forward(self, groups):
+        tokens = torch.stack([p(g) for p, g in zip(self.proj, groups)], dim=1)  # (B, n_groups, embed)
+        attn_out, _ = self.attn(tokens, tokens, tokens)
+        return self.norm(tokens + attn_out)  # (B, n_groups, embed)
+
+
+class LiverDualAttention(nn.Module):
+    """Full dual attention (TS-MSDA U-Net inspired): channel attention fuses the 4
+    feature groups [tool_hist, nb_deform, nb_stress, nb_realstrain] into one richer
+    token PER LAG (replacing naive concat), then sequence attention attends across
+    the 5 fused lag tokens (same mechanism as LagSequenceAttention, now fed richer
+    per-lag tokens instead of flattened ones).
+
+    Input layout (960) — identical to LagSequenceAttention, see that class's docstring.
+    """
+    def __init__(self, n_output: int, n_inputs: int = 960, n_lags: int = 5,
+                 embed_dim: int = 128, n_heads: int = 4, n_layers: int = 2):
+        super().__init__()
+        assert n_inputs == 960, "offsets below are hardcoded for the 960-dim layout"
+        self.n_lags = n_lags
+        self.n_global = 15
+        self.tool_hist_off, self.tool_hist_w = 15, 9
+        self.nb_deform_off, self.nb_w = 60, 60
+        self.nb_stress_off = 360
+        self.nb_strain_off = 660
+
+        group_dims = [self.tool_hist_w, self.nb_w, self.nb_w, self.nb_w]  # 9, 60, 60, 60
+        self.channel_attn = ChannelAttention(group_dims, embed_dim, n_heads)
+        self.lag_pool = nn.Linear(embed_dim * 4, embed_dim)
+
+        self.global_proj = nn.Linear(self.n_global, embed_dim)
+        self.pos_embed   = nn.Parameter(torch.randn(1, n_lags + 1, embed_dim) * 0.02)
+
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=embed_dim, nhead=n_heads, dim_feedforward=embed_dim * 4,
+            dropout=0.1, activation='gelu', batch_first=True
+        )
+        self.seq_attn = nn.TransformerEncoder(encoder_layer, num_layers=n_layers)
+
+        self.head = nn.Sequential(
+            nn.Linear(embed_dim * (n_lags + 1), 512), nn.GELU(),
+            nn.Linear(512, 256), nn.GELU(),
+            nn.Linear(256, n_output)
+        )
+
+    def forward(self, x):
+        B = x.shape[0]
+        global_feat = x[:, :self.n_global]
+
+        lag_tokens = []
+        for k in range(self.n_lags):
+            th = x[:, self.tool_hist_off + self.tool_hist_w*k : self.tool_hist_off + self.tool_hist_w*(k+1)]
+            nd = x[:, self.nb_deform_off + self.nb_w*k        : self.nb_deform_off + self.nb_w*(k+1)]
+            ns = x[:, self.nb_stress_off + self.nb_w*k        : self.nb_stress_off + self.nb_w*(k+1)]
+            nr = x[:, self.nb_strain_off + self.nb_w*k        : self.nb_strain_off + self.nb_w*(k+1)]
+            ch_tokens = self.channel_attn([th, nd, ns, nr])          # (B, 4, embed)
+            lag_tokens.append(self.lag_pool(ch_tokens.reshape(B, -1)))  # (B, embed)
+        lag_tokens = torch.stack(lag_tokens, dim=1)  # (B, 5, embed)
+
+        glob_embed = self.global_proj(global_feat).unsqueeze(1)  # (B, 1, embed)
+        seq = torch.cat([glob_embed, lag_tokens], dim=1) + self.pos_embed
+        seq = self.seq_attn(seq)
+        return self.head(seq.reshape(B, -1))
+
+
+class LagSequenceAttention(nn.Module):
+    """Sequence attention over the 5 lag steps (TS-MSDA U-Net inspired), replacing
+    the naive flatten+concat of lag history. Each lag's slice
+    [tool_hist(9) + nb_deform(60) + nb_stress(60) + nb_realstrain(60)] = 189 dims
+    becomes one token; self-attention lets the model learn which lag matters most
+    per-sample instead of every lag being weighted identically by a plain MLP.
+
+    Input layout (960, matches train_pinn_force_final.py's X_combined):
+      global (15): dt_cum(5) + dt_pred(1) + pos_vel(6) + contact(3)
+      tool_hist (45): 5 lags x 9, starting at offset 15
+      nb_deform (300): 5 lags x 60, starting at offset 60
+      nb_stress (300): 5 lags x 60, starting at offset 360
+      nb_realstrain (300): 5 lags x 60, starting at offset 660
+    """
+    def __init__(self, n_output: int, n_inputs: int = 960, n_lags: int = 5,
+                 embed_dim: int = 128, n_heads: int = 4, n_layers: int = 2):
+        super().__init__()
+        assert n_inputs == 960, "offsets below are hardcoded for the 960-dim layout"
+        self.n_lags = n_lags
+        self.n_global = 15
+        self.tool_hist_off, self.tool_hist_w = 15, 9
+        self.nb_deform_off, self.nb_w = 60, 60
+        self.nb_stress_off = 360
+        self.nb_strain_off = 660
+        token_dim = self.tool_hist_w + 3 * self.nb_w  # 189
+
+        self.token_proj  = nn.Linear(token_dim, embed_dim)
+        self.global_proj = nn.Linear(self.n_global, embed_dim)
+        self.pos_embed   = nn.Parameter(torch.randn(1, n_lags + 1, embed_dim) * 0.02)
+
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=embed_dim, nhead=n_heads, dim_feedforward=embed_dim * 4,
+            dropout=0.1, activation='gelu', batch_first=True
+        )
+        self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=n_layers)
+
+        self.head = nn.Sequential(
+            nn.Linear(embed_dim * (n_lags + 1), 512), nn.GELU(),
+            nn.Linear(512, 256), nn.GELU(),
+            nn.Linear(256, n_output)
+        )
+
+    def forward(self, x):
+        B = x.shape[0]
+        global_feat = x[:, :self.n_global]
+
+        tokens = []
+        for k in range(self.n_lags):
+            th = x[:, self.tool_hist_off + self.tool_hist_w*k : self.tool_hist_off + self.tool_hist_w*(k+1)]
+            nd = x[:, self.nb_deform_off + self.nb_w*k        : self.nb_deform_off + self.nb_w*(k+1)]
+            ns = x[:, self.nb_stress_off + self.nb_w*k        : self.nb_stress_off + self.nb_w*(k+1)]
+            nr = x[:, self.nb_strain_off + self.nb_w*k        : self.nb_strain_off + self.nb_w*(k+1)]
+            tokens.append(torch.cat([th, nd, ns, nr], dim=1))
+        tokens = torch.stack(tokens, dim=1)  # (B, 5, 189)
+
+        tok_embed  = self.token_proj(tokens)                      # (B, 5, embed)
+        glob_embed = self.global_proj(global_feat).unsqueeze(1)   # (B, 1, embed)
+        seq = torch.cat([glob_embed, tok_embed], dim=1) + self.pos_embed
+        seq = self.encoder(seq)
+        return self.head(seq.reshape(B, -1))
 
 
 def physics_loss(model: LiverPINN,

@@ -180,11 +180,14 @@ protected:
     sofa::type::Vec3d m_pinnCachedForce {0.0, 0.0, 0.0};
     std::mutex        m_pinnCacheMutex;
 
-    // Wall-clock start (same reference as DataCollector)
-    std::chrono::high_resolution_clock::time_point m_pinnStartTime;
-    bool m_pinnTimerSet {false};
-
-    // Time-gating: only call predictForce at training fps (~69.7 Hz = every 14.5ms)
+    // Deterministic step counter — NOT wall-clock, NOT elapsed sim-time. Must match
+    // DataCollector's collectEvery exactly (currently 3): call predictForce once every
+    // 3 AnimateEndEvents, same basis GeomagicDriver's REPLAY_SIM_STRIDE uses to advance
+    // the replay trajectory. No clock arithmetic anywhere -> no drift possible.
+    static constexpr int PINN_CALL_STEP_STRIDE = 3;
+    int    m_pinnStepCounter {0};
+    bool   m_pinnTimerSet {false};  // true after first predictForce call (for dt_pred base)
+    double m_pinnStartSimTime {0.0};
     double m_lastPINNCallElapsed {-1.0};
     float  m_prevTxForVel {0.f}, m_prevTyForVel {0.f}, m_prevTzForVel {0.f};
 };

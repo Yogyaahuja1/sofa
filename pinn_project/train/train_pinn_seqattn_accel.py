@@ -32,7 +32,7 @@ import numpy as np
 import pandas as pd
 from torch.utils.data import DataLoader, TensorDataset
 import matplotlib.pyplot as plt
-from pinn_model import LiverUNet
+from pinn_model import LagSequenceAttentionAccel
 
 # ============================================================
 # CONFIGURATION
@@ -266,10 +266,31 @@ contact_features = np.stack(
     [min_dist_to_mesh, delta_min_dist, lag1_contact], axis=1
 ).astype(np.float32)  # (N, 3)
 
+# Acceleration (wider lag1-vs-lag3 baseline, NOT adjacent-step — validated via
+# correlation test: leading corr(accel_t, |dF| over next 3 steps) = 0.66, the
+# strongest predictive feature found so far. Adjacent-step differencing would
+# amplify position-sensor noise; this wider baseline averages it out while still
+# catching genuine sustained acceleration from fast flicks.
+accel = np.zeros((N_rows, 3), dtype=np.float32)
+for row in range(N_rows):
+    src1, src3 = max(0, row - 1), max(0, row - 3)
+    if session_ids[src1] != session_ids[row] or session_ids[src3] != session_ids[row]:
+        continue
+    dt = real_time_vals[src1] - real_time_vals[src3]
+    if dt < 1e-4:
+        continue
+    accel[row, 0] = (tool_vx_all[src1] - tool_vx_all[src3]) / dt
+    accel[row, 1] = (tool_vy_all[src1] - tool_vy_all[src3]) / dt
+    accel[row, 2] = (tool_vz_all[src1] - tool_vz_all[src3]) / dt
+accel = np.clip(accel, -500.0, 500.0)
+
 corr_dt_pred,    _ = pearsonr(dt_pred_vals[:, 0], delta_best)
 corr_min_dist,   _ = pearsonr(min_dist_to_mesh,   force_mag_all)
 corr_delta_dist, _ = pearsonr(delta_min_dist,      force_mag_all)
 corr_lag1_cont,  _ = pearsonr(lag1_contact,        force_mag_all)
+accel_mag = np.linalg.norm(accel, axis=1)
+corr_accel, _ = pearsonr(accel_mag, force_mag_all)
+print(f"accel_mag corr with force_mag (simultaneous):       {corr_accel:.3f}")
 print(f"dt_pred corr with target delta:                     {corr_dt_pred:.3f}")
 print(f"min_dist_to_mesh corr with force_mag:               {corr_min_dist:.3f}")
 print(f"delta_min_dist corr with force_mag:                 {corr_delta_dist:.3f}")
@@ -306,19 +327,21 @@ X_combined = np.concatenate([
     nb_deform_features,           # (N, 300) idx  60-359
     nb_stress_features,           # (N, 300) idx 360-659
     nb_realstrain_features,       # (N, 300) idx 660-959
-], axis=1).astype(np.float32)      # (N, 960)
+    accel,                        # (N, 3)   idx  960-962  NEW — lag1-vs-lag3 acceleration
+], axis=1).astype(np.float32)      # (N, 963)
 
 N_INPUTS = X_combined.shape[1]
 X_raw_tensor = torch.FloatTensor(X_combined.copy())
-print(f"Total inputs: {N_INPUTS}")  # should print 960
+print(f"Total inputs: {N_INPUTS}")  # should print 963
 
 # Velocity column indices (for outlier clamping):
 # current tool_vx/vy/vz (idx 9-11) + tool_vx/vy/vz at each of the 5 history lags
-# contact_features occupy idx 12-14; tool_hist starts at 15
+# contact_features occupy idx 12-14; tool_hist starts at 15; accel at the new tail 960-962
 vel_indices = [9, 10, 11]
 for k in range(N_LAGS):
     base = 15 + 9 * k          # start of lag-k's 9-value block within tool_hist_features
     vel_indices += [base + 3, base + 4, base + 5]
+vel_indices += [960, 961, 962]
 
 # ============================================================
 # STEP 7: ASSEMBLE Y (537) — force (3, primary) + deformation delta (534)
@@ -392,7 +415,7 @@ print(f"  X std min/max: {X_std.min().item():.6f} / {X_std.max().item():.6f}")
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 print(f"\nDevice: {device}")
 
-model = LiverUNet(n_output=N_OUT, n_inputs=N_INPUTS).to(device)
+model = LagSequenceAttentionAccel(n_output=N_OUT, n_inputs=N_INPUTS).to(device)
 n_params = sum(p.numel() for p in model.parameters())
 print(f"Parameters: {n_params:,}")
 
@@ -410,7 +433,7 @@ history = {'epoch': [], 'total': [], 'force': [], 'deform': []}
 
 best_val_loss = float('inf')
 best_epoch    = 0
-MODEL_BEST    = 'tissue_pinn_force_final_best.pth'
+MODEL_BEST    = 'tissue_pinn_seqattn_accel_best.pth'
 
 print("\nTraining...\n")
 for epoch in range(N_EPOCHS):
@@ -546,8 +569,8 @@ with torch.no_grad():
     axes[1].legend()
 
     plt.tight_layout()
-    plt.savefig('sample_comparison_force_final.png', dpi=150)
-    print("\nSample comparison saved to sample_comparison_force_final.png")
+    plt.savefig('sample_comparison_seqattn_accel.png', dpi=150)
+    print("\nSample comparison saved to sample_comparison_seqattn_accel.png")
 
 # ============================================================
 # STEP 11: SAVE
@@ -570,8 +593,8 @@ torch.save({
     'force_rel_err': force_rel_err.item(),
     'force_rel_err_robust': force_rel_err_robust.item(),
     'deform_rel_err': deform_rel_err.item(),
-}, 'tissue_pinn_force_final.pth')
-print("Model saved to tissue_pinn_force_final.pth")
+}, 'tissue_pinn_seqattn_accel.pth')
+print("Model saved to tissue_pinn_seqattn_accel.pth")
 
 # ============================================================
 # STEP 12: PLOT LOSS CURVES
@@ -591,5 +614,5 @@ plt.bar(['Force Rel L2 %', 'Deform Rel L2 %'],
 plt.title('Validation vs FEM')
 
 plt.tight_layout()
-plt.savefig('training_results_force_final.png', dpi=150)
-print("Plot saved to training_results_force_final.png")
+plt.savefig('training_results_seqattn_accel.png', dpi=150)
+print("Plot saved to training_results_seqattn_accel.png")

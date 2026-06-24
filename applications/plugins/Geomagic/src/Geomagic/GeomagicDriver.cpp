@@ -196,6 +196,9 @@ GeomagicDriver::GeomagicDriver()
     , d_orientationTool(initData(&d_orientationTool, Quat(0,0,0,1), "orientationTool","Orientation of the tool in the SOFA scene world coordinates"))
     , d_scale(initData(&d_scale, 1.0, "scale", "Default scale applied to the Device coordinates"))
     , d_forceScale(initData(&d_forceScale, 1.0, "forceScale", "Default forceScale applied to the force feedback. "))
+    , d_maxLinearSpeed(initData(&d_maxLinearSpeed, SReal(8.0), "maxLinearSpeed",
+        "Max device speed (scene units/s). Clamps posDevice displacement per step to avoid "
+        "spring-coupling explosions on fast hand moves. <=0 disables."))
     , d_maxInputForceFeedback(initData(&d_maxInputForceFeedback, double(1.0), "maxInputForceFeedback", "Maximum value of the normed input force feedback for device security"))
     , d_inputForceFeedback(initData(&d_inputForceFeedback, Vec3(0, 0, 0), "inputForceFeedback", "Input force feedback in case of no LCPForceFeedback is found (manual setting)"))
     , d_manualStart(initData(&d_manualStart, false, "manualStart", "If true, will not automatically initDevice at component init phase."))
@@ -556,7 +559,27 @@ void GeomagicDriver::updatePosition()
     orientation.fromMatrix(mrot);
 
     //compute the position of the tool (according to positionbase, orientation base and the scale
-    posDevice.getCenter() = positionBase + orientationBase.rotate(position*scale);
+    Vec3 candidateCenter = positionBase + orientationBase.rotate(position*scale);
+
+    // Clamp per-step displacement so a fast hand flick can't inject a huge spring
+    // force into the coupled instrument in a single dt — that's what blew up the
+    // liver FEM (spring force = stiffness * gap, gap unbounded without this).
+    const SReal maxSpeed = d_maxLinearSpeed.getValue();
+    if (maxSpeed > 0 && m_hasLastDevicePos)
+    {
+        const SReal dt = (SReal)this->getContext()->getDt();
+        const SReal maxStep = maxSpeed * dt;
+        Vec3 delta = candidateCenter - m_lastDevicePos;
+        const SReal dist = delta.norm();
+        if (dist > maxStep && dist > 1e-12)
+        {
+            candidateCenter = m_lastDevicePos + delta * (maxStep / dist);
+        }
+    }
+    m_lastDevicePos = candidateCenter;
+    m_hasLastDevicePos = true;
+
+    posDevice.getCenter() = candidateCenter;
     posDevice.getOrientation() = orientationBase * orientation * orientationTool;
 
     d_posDevice.endEdit();

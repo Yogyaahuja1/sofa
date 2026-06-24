@@ -104,6 +104,12 @@ public:
     /// By default, assume that all edges have the same viscosity
     Data<SReal> m_viscosity;
 
+    /// Saturates the per-edge spring force magnitude to this value (Newtons). Prevents
+    /// unbounded force build-up when the coupled object is held against a rigid obstacle
+    /// for a sustained period (the spring gap keeps growing the longer contact is held,
+    /// even without any sudden displacement). <=0 disables the clamp.
+    Data<SReal> d_maxForce;
+
     Data<bool> m_useTopology; ///< Activate/Desactivate topology mode of the component (springs on each edge)
 
     /// Link to be set to the topology container in the component graph.

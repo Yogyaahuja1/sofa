@@ -1,10 +1,16 @@
 """
-Compare FEM ground truth vs PINN predicted forces from replay run.
+Compare FEM ground truth vs PINN predicted forces — both from deterministic
+SOFA replays of the SAME fixed trajectory (test_path.csv), run twice:
 
-FEM  source : training_data.csv   (tool_fx, tool_fy, tool_fz  — real FEM forces)
-PINN source : replay_pinn_forces.csv  (fx, fy, fz — PINN predicted on same path)
+  1. liver_replay_groundtruth.scn (usePINN=false) -> replay_groundtruth.csv
+  2. liver_replay_pinn.scn        (usePINN=true)  -> replay_pinn.csv
 
-Run after SOFA replay completes:
+This is the only fair comparison: both runs see identical tool positions at
+every step, so any force difference is purely PINN prediction error, not
+trajectory mismatch (training_data.csv from live sessions is NOT row-aligned
+with a replay and must not be used here).
+
+Run after both SOFA replays complete:
   python3 compare_replay.py
 """
 
@@ -12,15 +18,15 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 
-FEM_CSV  = '/home/yogyaahuja/sofa/pinn_project/data/training_data.csv'
-PINN_CSV = '/home/yogyaahuja/sofa/pinn_project/data/replay_pinn_forces.csv'
+FEM_CSV  = '/home/yogyaahuja/sofa/pinn_project/data/replay_groundtruth.csv'
+PINN_CSV = '/home/yogyaahuja/sofa/pinn_project/data/replay_pinn.csv'
 OUT_PNG  = '/home/yogyaahuja/sofa/pinn_project/data/replay_comparison.png'
 
-# ── Load FEM ground truth ─────────────────────────────────────────────────────
-fem = pd.read_csv(FEM_CSV, usecols=['tool_fx', 'tool_fy', 'tool_fz'])
-fx_fem = fem['tool_fx'].values
-fy_fem = fem['tool_fy'].values
-fz_fem = fem['tool_fz'].values
+# ── Load FEM ground truth (replay log: tool_x,tool_y,tool_z,fx,fy,fz) ────────
+fem = pd.read_csv(FEM_CSV)
+fx_fem = fem['fx'].values
+fy_fem = fem['fy'].values
+fz_fem = fem['fz'].values
 f_fem  = np.sqrt(fx_fem**2 + fy_fem**2 + fz_fem**2)
 
 # ── Load PINN replay output ───────────────────────────────────────────────────

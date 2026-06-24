@@ -244,32 +244,32 @@ print(f"  Median:   {median_e:.4f} N")
 print(f"  True |F| mean: {true_mag.mean():.3f} N  max: {true_mag.max():.3f} N")
 print(f"  PINN |F| mean: {pinn_mag.mean():.3f} N  max: {pinn_mag.max():.3f} N")
 
-# ── PLOT ──────────────────────────────────────────────────────────────────────
-t = rt_vals - rt_vals[0]   # time from session start
-labels = ['Fx (N)', 'Fy (N)', 'Fz (N)', '|F| (N)']
-true_cols = [true_force[:, 0], true_force[:, 1], true_force[:, 2], true_mag]
-pinn_cols = [pinn_force[:, 0], pinn_force[:, 1], pinn_force[:, 2], pinn_mag]
 
-fig = plt.figure(figsize=(14, 10))
-fig.suptitle(f'PINN vs FEM Force Comparison  |  Rel L2: {rel_l2:.1f}%  MAE: {mae:.3f}N  '
-             f'(FEM_SKIP={args.fem_skip})', fontsize=13, fontweight='bold')
-gs = gridspec.GridSpec(4, 1, hspace=0.45)
+# ── PARITY PLOT: predicted vs true, one point per state, no time/position/session ──
+fig, axes = plt.subplots(1, 4, figsize=(18, 4.5))
+fig.suptitle(f'PINN Parity Plot — predicted vs ground-truth force, per state  '
+             f'(FEM_SKIP={args.fem_skip}, n={N_rows} states)\n'
+             f'Rel L2: {rel_l2:.1f}%  MAE: {mae:.3f}N  |  perfect prediction = diagonal line',
+             fontsize=12, fontweight='bold')
 
-for i in range(4):
-    ax = fig.add_subplot(gs[i])
-    ax.plot(t, true_cols[i], color='royalblue',  linewidth=1.2, label='FEM (ground truth)', alpha=0.85)
-    ax.plot(t, pinn_cols[i], color='orangered',  linewidth=1.0, label='PINN prediction',
-            linestyle='--', alpha=0.85)
-    ax.set_ylabel(labels[i], fontsize=10)
+labels   = ['Fx (N)', 'Fy (N)', 'Fz (N)', '|F| (N)']
+true_set = [true_force[:, 0], true_force[:, 1], true_force[:, 2], true_mag]
+pred_set = [pinn_force[:, 0], pinn_force[:, 1], pinn_force[:, 2], pinn_mag]
+
+for i, ax in enumerate(axes):
+    t_vals, p_vals = true_set[i], pred_set[i]
+    lo, hi = min(t_vals.min(), p_vals.min()), max(t_vals.max(), p_vals.max())
+    ax.plot([lo, hi], [lo, hi], 'k--', linewidth=1, alpha=0.6, label='perfect (y=x)')
+    ax.scatter(t_vals, p_vals, s=10, alpha=0.4, color='tomato')
+    ax.set_xlabel(f'True {labels[i]}', fontsize=10)
+    ax.set_ylabel(f'Predicted {labels[i]}', fontsize=10)
+    ax.set_title(labels[i], fontsize=10)
     ax.grid(True, alpha=0.3)
+    ax.set_aspect('equal', adjustable='box')
     if i == 0:
-        ax.legend(loc='upper right', fontsize=9)
-    if i == 3:
-        ax.set_xlabel('Time (s)', fontsize=10)
-        # shade error
-        ax.fill_between(t, true_cols[i], pinn_cols[i], alpha=0.15, color='red', label='error')
+        ax.legend(loc='upper left', fontsize=8)
 
-out_path = os.path.join(os.path.dirname(__file__), 'force_comparison.png')
+plt.tight_layout()
+out_path = os.path.join(os.path.dirname(os.path.abspath('parity_plot.py')), f'parity_plot_skip{args.fem_skip}.png')
 plt.savefig(out_path, dpi=150, bbox_inches='tight')
-print(f"\nPlot saved → {out_path}")
-plt.show()
+print(f"\nParity plot saved -> {out_path}")
