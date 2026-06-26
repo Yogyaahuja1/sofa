@@ -128,13 +128,31 @@ HDCallbackCode HDCALLBACK stateCallback(void * userData)
         driver->m_forceFeedback->computeForce(pos_in_world[0],pos_in_world[1],pos_in_world[2], 0, 0, 0, 0, currentForce[0], currentForce[1], currentForce[2]);
 
         // ── REPLAY: log force output and advance index ────────────────────────
+        // Index advances on a wall-clock timer, not every callback — this thread
+        // runs on its own schedule decoupled from SOFA's step rate, and advancing
+        // every callback consumes the whole trajectory far faster than the physics
+        // can respond (confirmed: 139 rows in ~139ms vs. the ~16s the original
+        // recording took at this scene's pace). Hold each row for replayRowIntervalSec
+        // of real time instead, matching how long the recording actually held it.
         if (driver->m_replayMode)
         {
             if (driver->m_replayLog)
                 std::fprintf(driver->m_replayLog, "%.6f,%.6f,%.6f,%.6f,%.6f,%.6f\n",
                     pos_in_world[0], pos_in_world[1], pos_in_world[2],
                     currentForce[0], currentForce[1], currentForce[2]);
-            driver->m_replayIndex++;
+
+            const auto now = std::chrono::high_resolution_clock::now();
+            if (!driver->m_replayTimerStarted)
+            {
+                driver->m_replayLastAdvanceTime = now;
+                driver->m_replayTimerStarted = true;
+            }
+            const double elapsed = std::chrono::duration<double>(now - driver->m_replayLastAdvanceTime).count();
+            if (elapsed >= driver->d_replayRowIntervalSec.getValue())
+            {
+                driver->m_replayIndex++;
+                driver->m_replayLastAdvanceTime = now;
+            }
         }
         // ─────────────────────────────────────────────────────────────────────
 
@@ -212,6 +230,8 @@ GeomagicDriver::GeomagicDriver()
     , l_forceFeedback(initLink("forceFeedBack", "link to the forceFeedBack component, if not set will search through graph and take first one encountered."))
     , d_replayFile(initData(&d_replayFile, std::string(""), "replayFile", "CSV with recorded path (tool_x,tool_y,tool_z columns). Leave empty for live device mode."))
     , d_replayOutput(initData(&d_replayOutput, std::string(""), "replayOutput", "CSV to write force log during replay. Leave empty to skip."))
+    , d_replayUseRealDevice(initData(&d_replayUseRealDevice, false, "replayUseRealDevice", "Replay through the real device's hardware thread instead of hardware-independent batch replay. Needs a connected, calibrated device."))
+    , d_replayRowIntervalSec(initData(&d_replayRowIntervalSec, 0.118, "replayRowIntervalSec", "Real-device replay only: wall-clock seconds to hold each recorded row before advancing, matching the original recording's pace."))
     , m_simulationStarted(false)
     , m_isInContact(false)
     , m_hHD(HD_INVALID_HANDLE)
@@ -335,7 +355,22 @@ void GeomagicDriver::init()
     }
 
     // 3- init device and Hd scheduler
-    if (d_manualStart.getValue() == false)
+    // Replay mode normally needs no physical hardware — batch replay skips device
+    // init entirely so it's hardware-independent. But d_replayUseRealDevice opts
+    // into the opposite: a connected, calibrated device runs its real hardware
+    // thread (stateCallback) which already has replay-position-override logic
+    // built in, giving genuine continuous polling/timing instead of scripted steps.
+    if (m_replayMode && !d_replayUseRealDevice.getValue())
+    {
+        msg_info() << "Replay mode: skipping physical device initialisation entirely.";
+        sofa::core::objectmodel::BaseObject::d_componentState.setValue(sofa::core::objectmodel::ComponentState::Valid);
+    }
+    else if (m_replayMode && d_replayUseRealDevice.getValue())
+    {
+        msg_info() << "Replay mode with real device: initialising hardware for live-timed replay.";
+        initDevice();
+    }
+    else if (d_manualStart.getValue() == false)
         initDevice();
 }
 
@@ -505,7 +540,11 @@ void GeomagicDriver::updatePosition()
     // In replay mode without a real haptic device the HD scheduler never fires,
     // so m_simuData is never updated from the CSV positions set in the haptic callback.
     // Drive positionDevice directly from the replay trajectory in the SOFA thread instead.
-    if (m_replayMode && m_replayIndex < m_replayTrajectory.size())
+    // With d_replayUseRealDevice, the real hardware thread (stateCallback) already does
+    // this — including its own m_replayIndex advancement — so this software fallback
+    // must stay out of the way entirely, or the index would race ahead from being
+    // incremented by both the ~1kHz hardware thread and this slower SOFA-step path.
+    if (m_replayMode && !d_replayUseRealDevice.getValue() && m_replayIndex < m_replayTrajectory.size())
     {
         const auto& pt = m_replayTrajectory[m_replayIndex];
         posDevice.getCenter() = Vec3(pt[0], pt[1], pt[2]);
@@ -516,6 +555,19 @@ void GeomagicDriver::updatePosition()
                       << " posDevice=(" << pt[0] << "," << pt[1] << "," << pt[2] << ")"
                       << "  stride=" << m_replayStepSkip << "/" << REPLAY_SIM_STRIDE
                       << "  totalRows=" << m_replayTrajectory.size() << std::endl;
+
+        // ── Log force, hardware-independent: the original logging lived inside the
+        // HD scheduler callback, which only runs with real hardware. Replay mode now
+        // skips hardware init entirely, so compute+log it here instead, on the SOFA
+        // thread, using the same generic ForceFeedback interface the HD callback used.
+        if (m_replayLog && m_forceFeedback)
+        {
+            Vector3 currentForce;
+            m_forceFeedback->computeForce(pt[0], pt[1], pt[2], 0, 0, 0, 0,
+                                           currentForce[0], currentForce[1], currentForce[2]);
+            std::fprintf(m_replayLog, "%.6f,%.6f,%.6f,%.6f,%.6f,%.6f\n",
+                pt[0], pt[1], pt[2], currentForce[0], currentForce[1], currentForce[2]);
+        }
 
         // Training CSV was sampled every 5 sim steps (dt_since_last=0.005s, dt=0.001s).
         // Advance index only every REPLAY_SIM_STRIDE sim steps to match training sim rate.
@@ -533,7 +585,11 @@ void GeomagicDriver::updatePosition()
         d_angle.endEdit();
         return;
     }
-    if (m_replayMode)
+    // This freeze-on-exhaustion path is for the software fallback only — with a real
+    // device driving replay, stateCallback already freezes/zeroes force at the end of
+    // the trajectory on the hardware thread itself, and this function should fall
+    // through to read m_simuData (populated by that thread) like live device mode does.
+    if (m_replayMode && !d_replayUseRealDevice.getValue())
     {
         static bool s_replayExhaustedLogged = false;
         if (!s_replayExhaustedLogged)

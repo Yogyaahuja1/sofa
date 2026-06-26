@@ -225,6 +225,26 @@ std::array<float, 3> PINNPredictor::predictForce(
     for (int i = 0; i < N_IN; ++i)
         X_norm[i] = (X[i] - X_mean_[i]) / (X_std_[i] + 1e-8f);
 
+    // ── DEBUG: one-shot raw feature dump for direct comparison against Python ───
+    {
+        static bool dumped = false;
+        static int call_count = 0;
+        ++call_count;
+        if (!dumped && call_count == 50)
+        {
+            dumped = true;
+            std::ofstream dbg("/tmp/cpp_feature_dump.csv");
+            dbg << "idx,raw,mean,std,norm\n";
+            for (int i = 0; i < N_IN; ++i)
+                dbg << i << "," << X[i] << "," << X_mean_[i] << "," << X_std_[i] << "," << X_norm[i] << "\n";
+            dbg << "tx," << tx << "\nty," << ty << "\ntz," << tz << "\n";
+            dbg << "tvx," << tvx << "\ntvy," << tvy << "\ntvz," << tvz << "\n";
+            dbg << "prev_fx," << prev_fx << "\nprev_fy," << prev_fy << "\nprev_fz," << prev_fz << "\n";
+            dbg << "min_dist," << min_dist << "\nreal_time," << real_time << "\n";
+            std::cerr << "[PINN-DEBUG] Dumped first feature vector to /tmp/cpp_feature_dump.csv" << std::endl;
+        }
+    }
+
     // 7. Run model
     static int s_pred = 0;
     ++s_pred;
@@ -367,7 +387,27 @@ void PINNPredictor::buildFeatureVector(
         for (int n = 0; n < N_NB; ++n) X[idx++] = buf_rzz_[lag][nb[n]];
     }
 
-    assert(idx == N_IN);  // must be exactly 960
+    // --- acceleration (3): wide-baseline (lag1 vs lag3) velocity difference,
+    // matching training exactly: accel = (v[lag1] - v[lag3]) / (rt[lag1] - rt[lag3]),
+    // zero if that interval is degenerate (not enough real history yet). Adjacent-step
+    // differencing was deliberately avoided in training (amplifies sensor noise); this
+    // wider baseline must be replicated bit-for-bit or the feature means something
+    // different here than what the model learned.
+    {
+        const float dt_accel = (float)(rt_hist_[0] - rt_hist_[2]);
+        float ax = 0.f, ay = 0.f, az = 0.f;
+        if (dt_accel > 1e-4f) {
+            ax = (tool_hist_[0][3] - tool_hist_[2][3]) / dt_accel;
+            ay = (tool_hist_[0][4] - tool_hist_[2][4]) / dt_accel;
+            az = (tool_hist_[0][5] - tool_hist_[2][5]) / dt_accel;
+        }
+        ax = std::min(std::max(ax, -500.f), 500.f);
+        ay = std::min(std::max(ay, -500.f), 500.f);
+        az = std::min(std::max(az, -500.f), 500.f);
+        X[idx++] = ax; X[idx++] = ay; X[idx++] = az;
+    }
+
+    assert(idx == N_IN);  // must be exactly 963
 }
 
 // ── shiftBuffers ──────────────────────────────────────────────────────────────

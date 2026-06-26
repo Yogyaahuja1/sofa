@@ -25,7 +25,7 @@ public:
     static constexpr int N_V        = 181;   // total liver vertices
     static constexpr int N_LAGS     = 5;     // history window
     static constexpr int N_NB       = 20;    // nearest neighbours
-    static constexpr int N_IN       = 960;   // model input dim
+    static constexpr int N_IN       = 963;   // model input dim (960 base + 3 accel)
     static constexpr int N_OUT      = 537;   // model output dim (3 force + 534 deform)
     static constexpr int N_FORCE    = 3;
     static constexpr int N_DEFORM   = 534;   // 178 active verts × 3

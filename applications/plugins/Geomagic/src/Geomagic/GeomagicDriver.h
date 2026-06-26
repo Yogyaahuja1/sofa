@@ -33,6 +33,7 @@
 #include <vector>
 #include <array>
 #include <cstdio>
+#include <chrono>
 
 #if GEOMAGIC_HAVE_OPENHAPTICS
 #include <HD/hd.h>
@@ -134,6 +135,13 @@ public:
     // ── Path replay ─────────────────────────────────────────────────────────────
     Data<std::string> d_replayFile;   ///< CSV with recorded path (needs tool_x,tool_y,tool_z columns). Empty = live device.
     Data<std::string> d_replayOutput; ///< CSV to write force log during replay. Empty = no log.
+    Data<bool> d_replayUseRealDevice; ///< Replay through the real device's hardware thread (stateCallback overrides
+                                      ///< position with the recorded path while real force feedback still applies) —
+                                      ///< needs a connected, calibrated device. False (default) = hardware-independent
+                                      ///< batch replay, no device required.
+    Data<double> d_replayRowIntervalSec; ///< Real-device replay only: wall-clock seconds to hold each recorded row
+                                         ///< before advancing, matching the original recording's pace (measured
+                                         ///< ~0.118s/row average) instead of the hardware thread's native ~1kHz.
 
     /// This static bool is used to know if HD scheduler is already running. No mechanism provided by Hd lib.
     inline static bool s_schedulerRunning = false;
@@ -172,6 +180,15 @@ public:
     static constexpr int REPLAY_SIM_STRIDE = 3;
     std::vector<std::array<double,3>> m_replayTrajectory;
     FILE*  m_replayLog   {nullptr};
+
+    // Real-device replay (stateCallback) runs on the hardware thread at its own
+    // ~1kHz schedule, completely decoupled from SOFA's step rate — REPLAY_SIM_STRIDE
+    // means nothing there. Without a real-time gate the whole trajectory gets consumed
+    // in ~1ms/row, far faster than the physics can respond. Throttle by wall-clock time
+    // instead, advancing a row only once roughly as much real time has passed as did
+    // during the original recording.
+    std::chrono::high_resolution_clock::time_point m_replayLastAdvanceTime{};
+    bool m_replayTimerStarted {false};
 };
 
 } // namespace sofa::component::controller

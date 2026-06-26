@@ -97,6 +97,20 @@ protected:
     virtual bool updateConstraintProblem();
     virtual void doComputeForce(const  VecCoord& state,  VecDeriv& forces);
 
+    /// The actual LCP constraint-solve that produces real haptic force — extracted
+    /// from doComputeForce so it can run regardless of usePINN. Training's ground
+    /// truth force was always this computation's output, never the PINN's own guess;
+    /// the PINN predictor's "previous force" input must be fed the same real value,
+    /// not its own prior prediction, or every prediction compounds error with no
+    /// anchor to reality.
+    void computeRealLCPForce(const VecCoord& state, VecDeriv& forces);
+
+    /// Runs computeRealLCPForce with the same locking computeForce() would use,
+    /// bypassing the usePINN early-return in doComputeForce. Call this to get the
+    /// real force value to feed PINNPredictor, even while usePINN drives the actual
+    /// haptic output.
+    void computeRealForceForPINNFeedback(const VecCoord& state, VecDeriv& forces);
+
 
 public:
     void handleEvent(sofa::core::objectmodel::Event *event) override;
@@ -180,6 +194,12 @@ protected:
     sofa::type::Vec3d m_pinnCachedForce {0.0, 0.0, 0.0};
     std::mutex        m_pinnCacheMutex;
 
+    // Real force, computed fresh every doComputeForce call regardless of usePINN —
+    // unlike ft.force (read by getForce()), which gets overwritten with PINN's own
+    // cached output once usePINN is on. computeRealForceForPINNFeedback reads this,
+    // never ft.force, to avoid a closed feedback loop with no ground truth anchor.
+    sofa::type::Vec3d m_realForceCache {0.0, 0.0, 0.0};
+
     // Deterministic step counter — NOT wall-clock, NOT elapsed sim-time. Must match
     // DataCollector's collectEvery exactly (currently 3): call predictForce once every
     // 3 AnimateEndEvents, same basis GeomagicDriver's REPLAY_SIM_STRIDE uses to advance
@@ -187,9 +207,12 @@ protected:
     static constexpr int PINN_CALL_STEP_STRIDE = 3;
     int    m_pinnStepCounter {0};
     bool   m_pinnTimerSet {false};  // true after first predictForce call (for dt_pred base)
-    double m_pinnStartSimTime {0.0};
-    double m_lastPINNCallElapsed {-1.0};
-    float  m_prevTxForVel {0.f}, m_prevTyForVel {0.f}, m_prevTzForVel {0.f};
+    // Wall-clock, not simulation time — training's real_time column (DataCollector.cpp)
+    // came from std::chrono, varying with actual compute/device-polling overhead per step
+    // (~0.039s/step average, not the nominal 0.005s sim dt). getContext()->getTime()
+    // advances by a fixed amount every step regardless of how long the step actually
+    // took — a different quantity with a different distribution the model never saw.
+    std::chrono::high_resolution_clock::time_point m_pinnStartWallTime{};
 };
 
 // ── KEEP ONLY THESE DECLARATIONS AT THE BOTTOM ──

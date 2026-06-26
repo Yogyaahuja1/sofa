@@ -305,12 +305,43 @@ void LCPForceFeedback<DataTypes>::doComputeForce(const VecCoord& state,  VecDeri
     {
         if (m_usePINN && m_pinn && m_pinn->isInitialized() && !state.empty())
         {
+            // Still compute and cache the REAL force here, into a separate member
+            // never touched by the PINN path — ft.force (read by getForce()) gets
+            // overwritten with the PINN's own cached output two lines below this
+            // function returns, in the SReal computeForce(x,y,z,...) overload. If
+            // computeRealForceForPINNFeedback read ft.force, it would be reading
+            // PINN's own prior prediction once usePINN is on — a closed feedback
+            // loop with no real anchor, confirmed by direct measurement: GT and PINN
+            // caches tracked closely for the first ~100 rows, then diverged sharply
+            // as the contamination compounded. This separate cache is computed fresh
+            // every call, exactly like training's force was, but is immune to that.
+            VecDeriv realForcesForCache;
+            computeRealLCPForce(state, realForcesForCache);
+            if (!realForcesForCache.empty())
+                m_realForceCache = sofa::defaulttype::getVCenter(realForcesForCache[0]);
+
             std::lock_guard<std::mutex> lk(m_pinnCacheMutex);
             sofa::defaulttype::getVCenter(forces[0]) = m_pinnCachedForce;
             return;
         }
     }
     // ─────────────────────────────────────────────────────────────────────────
+
+    computeRealLCPForce(state, forces);
+    if constexpr (std::is_same_v<DataTypes, sofa::defaulttype::Rigid3Types>)
+    {
+        if (!forces.empty())
+            m_realForceCache = sofa::defaulttype::getVCenter(forces[0]);
+    }
+}
+
+template <class DataTypes>
+void LCPForceFeedback<DataTypes>::computeRealLCPForce(const VecCoord& state, VecDeriv& forces)
+{
+    const unsigned int stateSize = state.size();
+    forces.resize(stateSize);
+    for (unsigned int i = 0; i < forces.size(); ++i)
+        forces[i].clear();
 
     if(!constraintSolver||!mState)
         return;
@@ -384,6 +415,24 @@ void LCPForceFeedback<DataTypes>::doComputeForce(const VecCoord& state,  VecDeri
         {
             forces[i] = tempForces[i] * forceCoef.getValue();
         }
+    }
+}
+
+template <class DataTypes>
+void LCPForceFeedback<DataTypes>::computeRealForceForPINNFeedback(const VecCoord& state, VecDeriv& forces)
+{
+    // Reads m_realForceCache — computed fresh every doComputeForce call (see there),
+    // matching training's access pattern (read a cache kept up to date by whatever
+    // drives the device) without the self-referential contamination ft.force has
+    // once usePINN is on (ft.force becomes PINN's own cached output in that case).
+    // Confirmed by direct measurement: reading ft.force tracked ground truth closely
+    // for ~100 rows then diverged sharply as the feedback loop compounded.
+    forces.resize(state.size());
+    for (auto& f : forces) f.clear();
+    if constexpr (std::is_same_v<DataTypes, sofa::defaulttype::Rigid3Types>)
+    {
+        if (!forces.empty())
+            sofa::defaulttype::getVCenter(forces[0]) = m_realForceCache;
     }
 }
 
@@ -488,6 +537,20 @@ void LCPForceFeedback<DataTypes>::handleEvent(sofa::core::objectmodel::Event *ev
             return;
         }
 
+        // ── GATE THE WHOLE BLOCK, not just predictForce ─────────────────────────
+        // DataCollector's EMA (m_accStress) and deform-delta (m_prevDeform) updates
+        // were gated by collectEvery=3 during training — only recomputed once every
+        // 3 sim steps. This entire block was running unconditionally every single
+        // step instead, so the EMA decayed 3x faster (alpha applied 3x per training
+        // "tick") and the deform delta was computed against 1-step-old data instead
+        // of 3-step-old — both producing systematically different magnitudes than
+        // anything the model saw in training. Gate everything here, once, so ddx/
+        // sax/strain/updateFEM/predictForce all advance at the exact training rate.
+        ++m_pinnStepCounter;
+        const bool pinn_due = (m_pinnStepCounter % PINN_CALL_STEP_STRIDE) == 0;
+        if (!pinn_due)
+            return;
+
         // Delta deformation: (curPos-restPos) - prevDeform
         // MAX_DEFORM_MM: maximum plausible liver deformation (~30mm). Anything beyond
         // signals simulation divergence — clamp to 0 so PINN buffer stays clean.
@@ -538,45 +601,27 @@ void LCPForceFeedback<DataTypes>::handleEvent(sofa::core::objectmodel::Event *ev
 
         // Real Hooke's-law strain from TetrahedronFEMForceField
         // Skipped during PrecomputedConstraintCorrection precomputation (extreme D values).
+        // Read the FEM's own cached per-tet strain (computed during its addForce()
+        // pass this step) — the exact same accessor DataCollector.cpp used to label
+        // training data. An earlier version of this code manually re-derived strain
+        // via rotation matrices and a hand-rolled D_MAX cutoff; that path was never
+        // validated against the cached values and produced numbers the model had
+        // never seen, which silently wrecked a third of the input (nb_realstrain).
         std::vector<float> rxx(nv, 0.f), ryy(nv, 0.f), rzz(nv, 0.f);
         if (m_femFF && m_liverTopo)
         {
             const auto& tets = m_liverTopo->getTetrahedra();
-            if (log) std::cerr << "[PINN] handleEvent #" << s_hev
-                               << " D: tets=" << tets.size() << std::endl;
+            const int nTets = (int)m_femFF->getNumTetra();
             std::vector<int> cnt(nv, 0);
-            static constexpr double D_MAX = 5.0; // skip tet if deformation > 5 units (precomputation guard)
-            for (size_t t = 0; t < tets.size(); ++t)
+            for (int t = 0; t < nTets && t < (int)tets.size(); ++t)
             {
-                const auto& tet   = tets[t];
+                const auto& tet    = tets[t];
                 bool valid = true;
                 for (int i = 0; i < 4; ++i)
                     if (tet[i] >= (unsigned int)nv) { valid = false; break; }
                 if (!valid) continue;
 
-                const auto& R_2_0 = m_femFF->getActualTetraRotation((unsigned int)t);
-                const auto  R_0_2 = R_2_0.transposed();
-                sofa::type::Vec3d def[4];
-                for (int i = 0; i < 4; ++i)
-                    def[i] = R_0_2 * curPos[tet[i]];
-
-                def[1][0] -= def[0][0];
-                def[2][0] -= def[0][0]; def[2][1] -= def[0][1];
-                def[3]    -= def[0];
-
-                const auto& rotInit = m_femFF->getRotatedInitialElements((unsigned int)t);
-                sofa::type::Vec<12,double> D;
-                D[3] = rotInit[1][0]-def[1][0]; D[6] = rotInit[2][0]-def[2][0];
-                D[7] = rotInit[2][1]-def[2][1]; D[9] = rotInit[3][0]-def[3][0];
-                D[10]= rotInit[3][1]-def[3][1]; D[11]= rotInit[3][2]-def[3][2];
-
-                // Skip if deformation is NaN/inf or physically implausible (precomputation step)
-                bool d_ok = true;
-                for (int k = 0; k < 12; ++k)
-                    if (!std::isfinite(D[k]) || std::abs(D[k]) > D_MAX) { d_ok = false; break; }
-                if (!d_ok) continue;
-
-                const auto strain = m_femFF->getStrainDisplacement((unsigned int)t).multTranspose(D);
+                const auto& strain = m_femFF->getLastStrain((unsigned int)t);
                 for (int i = 0; i < 4; ++i)
                 {
                     rxx[tet[i]] += (float)strain[0];
@@ -610,10 +655,23 @@ void LCPForceFeedback<DataTypes>::handleEvent(sofa::core::objectmodel::Event *ev
             if (mState)
             {
                 const auto& toolCoords = mState->read(sofa::core::ConstVecCoordId::position())->getValue();
+                const auto& toolVels   = mState->read(sofa::core::ConstVecDerivId::velocity())->getValue();
                 if (!toolCoords.empty())
                 {
                     const auto& center = toolCoords[0].getCenter();
                     float tx = (float)center[0], ty = (float)center[1], tz = (float)center[2];
+                    // Real SOFA-integrated rigid-body velocity (mass + spring + damping),
+                    // not a manual position finite-difference — training's tool_vx/vy/vz
+                    // came from the same MechanicalState velocity read in DataCollector.cpp,
+                    // never from differencing positions. A spring-coupled body's actual
+                    // velocity can differ substantially from naive position-derivative,
+                    // especially right after the coupling spring pulls it toward a new target.
+                    float realTvx = 0.f, realTvy = 0.f, realTvz = 0.f;
+                    if (!toolVels.empty())
+                    {
+                        const auto& vel = sofa::defaulttype::getVCenter(toolVels[0]);
+                        realTvx = (float)vel[0]; realTvy = (float)vel[1]; realTvz = (float)vel[2];
+                    }
 
                     if (!std::isfinite(tx) || !std::isfinite(ty) || !std::isfinite(tz))
                     {
@@ -649,46 +707,40 @@ void LCPForceFeedback<DataTypes>::handleEvent(sofa::core::objectmodel::Event *ev
 
                     if (!m_pinnTimerSet)
                     {
-                        m_pinnStartSimTime = this->getContext()->getTime();
+                        m_pinnStartWallTime = std::chrono::high_resolution_clock::now();
                         m_pinnTimerSet  = true;
                     }
-                    double elapsed = this->getContext()->getTime() - m_pinnStartSimTime;
+                    double elapsed = std::chrono::duration<double>(
+                        std::chrono::high_resolution_clock::now() - m_pinnStartWallTime).count();
 
-                    // ── DETERMINISTIC STEP GATE ────────────────────────────────────────────────
-                    // No clocks at all. Call predictForce once every PINN_CALL_STEP_STRIDE
-                    // AnimateEndEvents — the same step-counting basis DataCollector used
-                    // (collectEvery=3) and GeomagicDriver's replay uses (REPLAY_SIM_STRIDE=3).
-                    // Wall-clock and sim-time elapsed gating both drift/desync from the
-                    // trajectory's actual row-by-row progress; a plain counter cannot.
-                    ++m_pinnStepCounter;
-                    const bool pinn_due = (m_pinnStepCounter % PINN_CALL_STEP_STRIDE) == 0;
-
-                    float pfx, pfy, pfz;
+                    // Gating already happened once, at the top of this PINN block (we returned
+                    // early if not due) — this whole section, including the FEM/EMA reads above,
+                    // only ever runs on the correct every-3rd-step cadence now.
                     {
-                        std::lock_guard<std::mutex> lk(m_pinnCacheMutex);
-                        pfx = (float)m_pinnCachedForce[0];
-                        pfy = (float)m_pinnCachedForce[1];
-                        pfz = (float)m_pinnCachedForce[2];
-                    }
-
-                    if (pinn_due)
-                    {
-                        // Compute velocity from position diff since last PINN call (units: same as pos/s)
-                        float tvx = 0.f, tvy = 0.f, tvz = 0.f;
-                        if (m_lastPINNCallElapsed > 0.0)
+                        // ── Feed the predictor REAL force, not its own last guess ──────────
+                        // Training (and every Python-side validation, including FEM_SKIP
+                        // robustness tests) always used the true measured force for this
+                        // input slot, never a self-prediction. m_pinnCachedForce is the
+                        // PINN's own prior output — using it here would create a closed
+                        // feedback loop with no anchor to reality, compounding error
+                        // indefinitely. Run the real LCP solve (same computation that
+                        // produced training's ground-truth labels) instead.
+                        VecCoord realState; realState.resize(1);
+                        realState[0].getCenter() = sofa::type::Vec3(tx, ty, tz);
+                        VecDeriv realForces;
+                        this->computeRealForceForPINNFeedback(realState, realForces);
+                        float pfx = 0.f, pfy = 0.f, pfz = 0.f;
+                        if (!realForces.empty())
                         {
-                            double dt_call = elapsed - m_lastPINNCallElapsed;
-                            if (dt_call > 1e-6)
-                            {
-                                // Clamp to ±20 (training p1/p99 range: -20.09, +20.83)
-                                auto clamp20 = [](float v){ return std::max(-20.f, std::min(20.f, v)); };
-                                tvx = clamp20((float)((tx - m_prevTxForVel) / dt_call));
-                                tvy = clamp20((float)((ty - m_prevTyForVel) / dt_call));
-                                tvz = clamp20((float)((tz - m_prevTzForVel) / dt_call));
-                            }
+                            const auto& fc = sofa::defaulttype::getVCenter(realForces[0]);
+                            pfx = (float)fc[0]; pfy = (float)fc[1]; pfz = (float)fc[2];
                         }
-                        m_prevTxForVel = tx; m_prevTyForVel = ty; m_prevTzForVel = tz;
-                        m_lastPINNCallElapsed = elapsed;
+                        // Real velocity (read above from mState), clamped to the same range
+                        // training's actual recorded velocities fell within (p1/p99: -20.09,
+                        // +20.83) — guards against the rare case of a transient spike in the
+                        // real integrated velocity pushing inputs out of the trained distribution.
+                        auto clamp20 = [](float v){ return std::max(-20.f, std::min(20.f, v)); };
+                        float tvx = clamp20(realTvx), tvy = clamp20(realTvy), tvz = clamp20(realTvz);
 
                         if (log) std::cerr << "[PINN] handleEvent #" << s_hev
                                            << " G: predictForce tx=" << tx << " ty=" << ty << " tz=" << tz
@@ -709,7 +761,6 @@ void LCPForceFeedback<DataTypes>::handleEvent(sofa::core::objectmodel::Event *ev
                         std::lock_guard<std::mutex> lk(m_pinnCacheMutex);
                         m_pinnCachedForce = sofa::type::Vec3d(f[0], f[1], f[2]);
                     }
-                    // else: not enough time elapsed — reuse cached force (no buffer update)
                 }
             }
         }

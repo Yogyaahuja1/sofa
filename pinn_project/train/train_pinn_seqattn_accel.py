@@ -41,7 +41,7 @@ CSV_PATH      = '/home/yogyaahuja/sofa/pinn_project/data/training_data.csv'
 N_VERTICES    = 181
 FIXED_INDICES = [3, 39, 64]             # from FixedConstraint in scene
 BATCH_SIZE    = 64
-N_EPOCHS      = 7000
+N_EPOCHS      = 3000
 LR            = 3e-4
 TRAIN_SPLIT   = 0.8
 N_NEIGHBOURS  = 20
@@ -434,6 +434,7 @@ history = {'epoch': [], 'total': [], 'force': [], 'deform': []}
 best_val_loss = float('inf')
 best_epoch    = 0
 MODEL_BEST    = 'tissue_pinn_seqattn_accel_best.pth'
+EARLY_STOP_PATIENCE = 800  # epochs without val improvement before stopping
 
 print("\nTraining...\n")
 for epoch in range(N_EPOCHS):
@@ -475,6 +476,10 @@ for epoch in range(N_EPOCHS):
             best_val_loss = val_loss
             best_epoch    = epoch
             torch.save(model.state_dict(), MODEL_BEST)
+        elif epoch - best_epoch >= EARLY_STOP_PATIENCE:
+            print(f"\nEarly stopping at epoch {epoch} — no val improvement in {EARLY_STOP_PATIENCE} epochs "
+                  f"(best was epoch {best_epoch}, val loss {best_val_loss:.6f})")
+            break
 
     if epoch % 200 == 0:
         history['epoch'].append(epoch)

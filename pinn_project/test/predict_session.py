@@ -18,10 +18,10 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
-from pinn_model import LiverUNet
+from pinn_model import LagSequenceAttentionAccel
 
 # ── CONFIG ────────────────────────────────────────────────────────────────────
-MODEL_PATH    = '/home/yogyaahuja/sofa/pinn_project/train/tissue_pinn_force_final.pth'
+MODEL_PATH    = '/home/yogyaahuja/sofa/pinn_project/train/tissue_pinn_seqattn_accel.pth'
 CSV_PATH      = '/home/yogyaahuja/sofa/pinn_project/data/training_data.csv'
 VERTICES_PATH = '/home/yogyaahuja/sofa/pinn_project/data/liver_vertices.npy'
 N_NEIGHBOURS  = 20
@@ -49,7 +49,7 @@ Y_std  = ckpt['Y_std'].cpu().numpy()  if hasattr(ckpt['Y_std'],  'numpy') else n
 n_in   = ckpt['n_inputs']
 n_out  = ckpt['n_output']
 n_force= ckpt['n_force']
-model  = LiverUNet(n_output=n_out, n_inputs=n_in).to(device)
+model  = LagSequenceAttentionAccel(n_output=n_out, n_inputs=n_in).to(device)
 model.load_state_dict(ckpt['model_state'])
 model.eval()
 print(f"  Model: {n_in} → {n_out} | Device: {device}")
@@ -174,9 +174,22 @@ def build_X(row, buf_ddx, buf_ddy, buf_ddz, buf_sax, buf_say, buf_saz,
         df_f.extend([buf_ddx[li][nb], buf_ddy[li][nb], buf_ddz[li][nb]])
         sf_f.extend([buf_sax[li][nb], buf_say[li][nb], buf_saz[li][nb]])
         rf_f.extend([buf_rxx[li][nb], buf_ryy[li][nb], buf_rzz[li][nb]])
+    # Acceleration (3): wide-baseline lag1-vs-lag3 velocity difference, matching
+    # training exactly — zero if either source row crosses a session boundary or
+    # the time baseline is degenerate.
+    src1, src3 = max(0, row - 1), max(0, row - 3)
+    accel = np.zeros(3, dtype=np.float32)
+    if sess[src1] == sess[row] and sess[src3] == sess[row]:
+        dt_a = rt_vals[src1] - rt_vals[src3]
+        if dt_a > 1e-4:
+            accel[0] = (tool_vx[src1] - tool_vx[src3]) / dt_a
+            accel[1] = (tool_vy[src1] - tool_vy[src3]) / dt_a
+            accel[2] = (tool_vz[src1] - tool_vz[src3]) / dt_a
+    accel = np.clip(accel, -500.0, 500.0)
+
     return np.concatenate([dt_cum, [dt_pred], cur, cf, th,
                            np.concatenate(df_f), np.concatenate(sf_f),
-                           np.concatenate(rf_f)]).astype(np.float32)
+                           np.concatenate(rf_f), accel]).astype(np.float32)
 
 # ── RUN PINN ──────────────────────────────────────────────────────────────────
 print(f"Running PINN prediction (FEM_SKIP={args.fem_skip})...")

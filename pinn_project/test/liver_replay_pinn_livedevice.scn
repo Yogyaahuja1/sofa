@@ -1,7 +1,6 @@
 <?xml version="1.0" ?>
 <Node name="root" dt="0.005" gravity="0 0 0">
 
-    <RequiredPlugin name="PINNDataCollector"/>
     <RequiredPlugin name="Geomagic"/>
     <RequiredPlugin name="Sofa.Component.AnimationLoop"/>
     <RequiredPlugin name="Sofa.Component.Collision.Detection.Algorithm"/>
@@ -41,8 +40,10 @@
     <FreeMotionAnimationLoop/>
     <LCPConstraintSolver tolerance="0.001" maxIt="1000"/>
 
-    <!-- REPLAY mode: deterministic path, no live device needed.
-         usePINN=false on LCPForceFeedback below -> ground truth FEM forces. -->
+    <!-- LIVE-DEVICE REPLAY: real hardware thread runs (continuous, ~1kHz polling),
+         but position is overridden by the recorded path inside stateCallback instead
+         of reading your hand. Real force feedback is sent to the device the whole
+         time. Needs a connected, calibrated device. usePINN=true -> PINN drives force. -->
     <GeomagicDriver name="GeomagicDevice"
         deviceName="Default Device"
         scale="1"
@@ -50,7 +51,8 @@
         orientationBase="0 0.707 0 -0.707"
         maxLinearSpeed="60"
         replayFile="/home/yogyaahuja/sofa/pinn_project/data/test_path.csv"
-        replayOutput="/home/yogyaahuja/sofa/pinn_project/data/replay_groundtruth.csv"/>
+        replayOutput="/home/yogyaahuja/sofa/pinn_project/data/replay_pinn_livedevice.csv"
+        replayUseRealDevice="true"/>
 
     <!-- ===== LIVER NODE ===== -->
     <Node name="Liver" gravity="0 0 0">
@@ -68,16 +70,6 @@
             youngModulus="1500"/>
         <LinearSolverConstraintCorrection/>
         <FixedConstraint indices="3 39 64 112 122 127"/>
-
-        <!-- Full-state dump of the GROUND TRUTH replay — same format as training_data.csv,
-             so the already-validated Python feature pipeline can be run on this EXACT
-             replayed trajectory, isolating whether the C++ implementation has a real bug
-             from whether this specific trajectory is just inherently hard for the model. -->
-        <DataCollector
-            outputFile="/home/yogyaahuja/sofa/pinn_project/data/replay_full_dump.csv"
-            collectEvery="3"
-            dumpAxbEvery="0"
-            axbDir="/home/yogyaahuja/sofa/pinn_project/data/ax_b"/>
 
         <Node name="Visu">
             <MeshOBJLoader name="objLoader" filename="mesh/liver-smooth.obj"/>
@@ -110,7 +102,7 @@
         <CGLinearSolver iterations="25" tolerance="1e-10" threshold="10e-10"/>
         <MechanicalObject name="instrumentState" template="Rigid3d" position="-1.270371 3.106339 -2.161702  0 0 0 1"/>
         <UniformMass totalMass="0.5"/>
-        <LCPForceFeedback name="LCPForceFeedback" template="Rigid3d" activate="true" forceCoef="0.1" usePINN="false"/>
+        <LCPForceFeedback name="LCPForceFeedback" template="Rigid3d" activate="true" forceCoef="0.1" usePINN="true"/>
         <UncoupledConstraintCorrection/>
 
         <Node name="VisualModel">

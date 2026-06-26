@@ -14,18 +14,18 @@ sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'train'))
 
 import torch
 import numpy as np
-from pinn_model import LiverUNet
+from pinn_model import LagSequenceAttentionAccel
 
-BEST_PATH    = '/home/yogyaahuja/sofa/pinn_project/train/tissue_pinn_force_final_best.pth'
-FULL_PATH    = '/home/yogyaahuja/sofa/pinn_project/train/tissue_pinn_force_final.pth'
+FULL_PATH    = '/home/yogyaahuja/sofa/pinn_project/train/tissue_pinn_seqattn_accel.pth'
 VERTICES_NPY = '/home/yogyaahuja/sofa/pinn_project/data/liver_vertices.npy'
 OUT_DIR      = '/home/yogyaahuja/sofa/pinn_project/cpp'
 
 os.makedirs(OUT_DIR, exist_ok=True)
 
 # ── Load checkpoint ────────────────────────────────────────────────────────────
-# Best checkpoint is state_dict only (saved during training loop).
-# Load normalization stats from the full final checkpoint.
+# This file already holds the best-val-loss weights (training script reloads the
+# best checkpoint before saving), plus normalization stats — one file, no separate
+# best/final split needed.
 print("Loading checkpoint...")
 full_ckpt = torch.load(FULL_PATH, map_location='cpu', weights_only=False)
 n_in  = full_ckpt['n_inputs']
@@ -41,14 +41,10 @@ Y_std  = to_np(full_ckpt['Y_std'])
 print(f"  n_inputs={n_in}, n_outputs={n_out}")
 print(f"  X_mean shape: {X_mean.shape}, Y_mean shape: {Y_mean.shape}")
 
-# Load best weights (state_dict only)
-best_state = torch.load(BEST_PATH, map_location='cpu', weights_only=False)
-# If it's accidentally a full dict, unwrap it
-if isinstance(best_state, dict) and 'model_state' in best_state:
-    best_state = best_state['model_state']
+model_state = full_ckpt['model_state']
 
-model = LiverUNet(n_output=n_out, n_inputs=n_in)
-model.load_state_dict(best_state)
+model = LagSequenceAttentionAccel(n_output=n_out, n_inputs=n_in)
+model.load_state_dict(model_state)
 model.eval()
 
 # ── Export TorchScript ─────────────────────────────────────────────────────────
