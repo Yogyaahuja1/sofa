@@ -81,6 +81,22 @@ list(APPEND CMAKE_PREFIX_PATH "/home/yogyaahuja/.local/lib/python3.12/site-packa
 ```
 Update this if LibTorch moves or on a different machine.
 
+### Common first-time build error: "No CMAKE_CUDA_COMPILER could be found"
+
+If the installed LibTorch is a CUDA-enabled build, CMake will detect any NVIDIA GPU/CUDA
+toolkit present and try to enable CUDA compilation for it — even though **the deployed
+model only ever runs on CPU** (`PINNPredictor.h` hardcodes `device_(torch::kCPU)`
+specifically to avoid CUDA allocator conflicts). If `nvcc` isn't on `PATH` or isn't where
+CMake expects, configuration fails with this error. Fix by pointing CMake at the actual
+`nvcc` binary before configuring:
+```bash
+export CUDACXX=/usr/local/cuda/bin/nvcc   # adjust path if your CUDA install differs —
+                                           # find it with: find /usr/local/cuda* -name nvcc
+cd /home/yogyaahuja/sofa/build
+cmake ..
+make -j$(nproc) Sofa.Component.Haptics Geomagic
+```
+
 ### Building the data-collection plugin (separate, optional)
 
 Only needed if you're re-collecting training data — `PINNDataCollector` is a
