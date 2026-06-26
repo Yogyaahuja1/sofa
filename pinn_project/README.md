@@ -97,6 +97,23 @@ cmake ..
 make -j$(nproc) Sofa.Component.Haptics Geomagic
 ```
 
+### Common first-time build error: "No rule to make target 'Geomagic'"
+
+The `Geomagic` plugin isn't built by default — it's gated behind an explicit CMake option
+(`PLUGIN_GEOMAGIC`), separate from `Sofa.Component.Haptics`. If you only ran a plain
+`cmake ..`, this target simply doesn't exist yet. Enable it explicitly:
+```bash
+cd /home/yogyaahuja/sofa/build
+cmake -DPLUGIN_GEOMAGIC=ON ..
+make -j$(nproc) Sofa.Component.Haptics Geomagic
+```
+This also requires the **OpenHaptics SDK** (`libHD`, `libHL`, `libHDU`) to actually be
+installed on the machine — check with `ls /usr/lib/libHD* /usr/lib/libHL* /usr/lib/libHDU*`.
+If those aren't present, this is a separate, vendor-provided SDK (3D Systems/Geomagic),
+not something `apt` provides — without it, `Geomagic` can't be built on that machine at
+all, and only the hardware-independent scripted replay tests (not the live-device ones)
+will be possible there.
+
 ### Building the data-collection plugin (separate, optional)
 
 Only needed if you're re-collecting training data — `PINNDataCollector` is a
