@@ -117,8 +117,13 @@ will be possible there.
 ### Building the data-collection plugin (separate, optional)
 
 Only needed if you're re-collecting training data — `PINNDataCollector` is a
-standalone plugin, not built as part of the main SOFA build:
+standalone plugin, not built as part of the main SOFA build. **Its `CMakeLists.txt`
+lives in `pinn_project/collect_data/`, not in `pinn_project/` itself** — there is no
+CMake project directly under `pinn_project/` (that folder just holds several unrelated
+subdirectories: `train/`, `test/`, `cpp/`, `data/`, none of them CMake projects). Make
+sure the `build/` directory is created one level *inside* `collect_data/`, not next to it:
 ```bash
+mkdir -p /home/yogyaahuja/sofa/pinn_project/collect_data/build
 cd /home/yogyaahuja/sofa/pinn_project/collect_data/build
 cmake .. && make -j$(nproc)
 ```
