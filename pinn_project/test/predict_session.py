@@ -18,14 +18,14 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
-from pinn_model import LagSequenceAttentionAccel
+from pinn_model import LagSequenceAttentionAccelVar
 
 # ── CONFIG ────────────────────────────────────────────────────────────────────
-MODEL_PATH    = '/home/yogyaahuja/sofa/pinn_project/train/tissue_pinn_seqattn_accel.pth'
+MODEL_PATH    = '/home/yogyaahuja/sofa/pinn_project/train/tissue_pinn_contactweight_n8_beta5.0.pth'
 CSV_PATH      = '/home/yogyaahuja/sofa/pinn_project/data/training_data.csv'
 VERTICES_PATH = '/home/yogyaahuja/sofa/pinn_project/data/liver_vertices.npy'
 N_NEIGHBOURS  = 20
-N_LAGS        = 5
+N_LAGS        = 8
 N_VERTICES    = 181
 FIXED_INDICES = [3, 39, 64]
 SEED          = 42
@@ -49,7 +49,7 @@ Y_std  = ckpt['Y_std'].cpu().numpy()  if hasattr(ckpt['Y_std'],  'numpy') else n
 n_in   = ckpt['n_inputs']
 n_out  = ckpt['n_output']
 n_force= ckpt['n_force']
-model  = LagSequenceAttentionAccel(n_output=n_out, n_inputs=n_in).to(device)
+model  = LagSequenceAttentionAccelVar(n_output=n_out, n_inputs=n_in, n_lags=N_LAGS).to(device)
 model.load_state_dict(ckpt['model_state'])
 model.eval()
 print(f"  Model: {n_in} → {n_out} | Device: {device}")

@@ -23,9 +23,14 @@ class PINNPredictor
 {
 public:
     static constexpr int N_V        = 181;   // total liver vertices
-    static constexpr int N_LAGS     = 5;     // history window
+    static constexpr int N_LAGS     = 8;     // history window — found via sweep to be the
+                                              // sweet spot (5 underfits sustained contact,
+                                              // 12 overfits and hurts worst-case force error)
     static constexpr int N_NB       = 20;    // nearest neighbours
-    static constexpr int N_IN       = 963;   // model input dim (960 base + 3 accel)
+    static constexpr int N_IN       = 1533;  // model input dim: 190*N_LAGS + 13
+                                              // (dt_cum(N_LAGS) + dt_pred(1) + pos_vel(6) +
+                                              // contact(3) + tool_hist(9*N_LAGS) +
+                                              // nb_deform/stress/strain(60*N_LAGS each) + accel(3))
     static constexpr int N_OUT      = 537;   // model output dim (3 force + 534 deform)
     static constexpr int N_FORCE    = 3;
     static constexpr int N_DEFORM   = 534;   // 178 active verts × 3

@@ -1,0 +1,1 @@
+n_lags=  8  vel_smooth_window=15  epochs_run=  950  best_val_loss=0.082847  force_rel_l2= 11.16%  force_rel_l2_robust=  7.71%  force_rel_l2_sustained=  9.03%  deform_rel_l2= 28.58%  params=1,284,633

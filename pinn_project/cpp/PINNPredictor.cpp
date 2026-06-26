@@ -326,9 +326,10 @@ void PINNPredictor::findNeighbours(float tx, float ty, float tz, int* nb_out) co
 }
 
 // ── buildFeatureVector ────────────────────────────────────────────────────────
-// Must exactly match the ordering in train_pinn_force_final.py:
-//   dt_cum(5) + dt_pred(1) + pos_vel(6) + contact(3) + tool_hist(45)
-//   + nb_deform(300) + nb_stress(300) + nb_realstrain(300) = 960
+// Must exactly match the ordering in train_pinn_contactweight.py (n_lags=8, the
+// sweep-confirmed sweet spot):
+//   dt_cum(N_LAGS) + dt_pred(1) + pos_vel(6) + contact(3) + tool_hist(9*N_LAGS)
+//   + nb_deform/stress/strain(60*N_LAGS each) + accel(3) = 190*N_LAGS+13 = 1533
 void PINNPredictor::buildFeatureVector(
     float* X,
     float tx, float ty, float tz,
@@ -407,7 +408,7 @@ void PINNPredictor::buildFeatureVector(
         X[idx++] = ax; X[idx++] = ay; X[idx++] = az;
     }
 
-    assert(idx == N_IN);  // must be exactly 963
+    assert(idx == N_IN);  // must be exactly 1533 (190*N_LAGS+13, N_LAGS=8)
 }
 
 // ── shiftBuffers ──────────────────────────────────────────────────────────────

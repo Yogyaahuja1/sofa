@@ -312,6 +312,124 @@ class LagSequenceAttentionAccel(nn.Module):
         return self.head(seq.reshape(B, -1))
 
 
+class LagSequenceAttentionAccelVar(nn.Module):
+    """Same architecture as LagSequenceAttentionAccel, but with offsets computed
+    from n_lags instead of hardcoded for 5 — lets the lag window size be swept
+    (e.g. 5 vs 8 vs 12) without editing the model class each time. Input layout
+    for a given n_lags: dt_cum(n_lags) + dt_pred(1) + pos_vel(6) + contact(3)
+    + tool_hist(9*n_lags) + nb_deform(60*n_lags) + nb_stress(60*n_lags)
+    + nb_strain(60*n_lags) + accel(3) = 190*n_lags + 13 total."""
+    def __init__(self, n_output: int, n_inputs: int, n_lags: int = 5,
+                 embed_dim: int = 128, n_heads: int = 4, n_layers: int = 2):
+        super().__init__()
+        expected = 190 * n_lags + 13
+        assert n_inputs == expected, f"n_inputs={n_inputs} doesn't match n_lags={n_lags} (expected {expected})"
+        self.n_lags = n_lags
+        self.n_global = n_lags + 10  # dt_cum(n_lags) + dt_pred(1) + pos_vel(6) + contact(3)
+        self.tool_hist_off, self.tool_hist_w = self.n_global, 9
+        self.nb_deform_off, self.nb_w = self.tool_hist_off + 9 * n_lags, 60
+        self.nb_stress_off = self.nb_deform_off + 60 * n_lags
+        self.nb_strain_off = self.nb_stress_off + 60 * n_lags
+        self.accel_off     = self.nb_strain_off + 60 * n_lags
+        token_dim = self.tool_hist_w + 3 * self.nb_w  # 189, same regardless of n_lags
+
+        self.token_proj  = nn.Linear(token_dim, embed_dim)
+        self.global_proj = nn.Linear(self.n_global + 3, embed_dim)
+        self.pos_embed   = nn.Parameter(torch.randn(1, n_lags + 1, embed_dim) * 0.02)
+
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=embed_dim, nhead=n_heads, dim_feedforward=embed_dim * 4,
+            dropout=0.1, activation='gelu', batch_first=True
+        )
+        self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=n_layers)
+
+        self.head = nn.Sequential(
+            nn.Linear(embed_dim * (n_lags + 1), 512), nn.GELU(),
+            nn.Linear(512, 256), nn.GELU(),
+            nn.Linear(256, n_output)
+        )
+
+    def forward(self, x):
+        B = x.shape[0]
+        global_feat = torch.cat([x[:, :self.n_global], x[:, self.accel_off:self.accel_off+3]], dim=1)
+
+        tokens = []
+        for k in range(self.n_lags):
+            th = x[:, self.tool_hist_off + self.tool_hist_w*k : self.tool_hist_off + self.tool_hist_w*(k+1)]
+            nd = x[:, self.nb_deform_off + self.nb_w*k        : self.nb_deform_off + self.nb_w*(k+1)]
+            ns = x[:, self.nb_stress_off + self.nb_w*k        : self.nb_stress_off + self.nb_w*(k+1)]
+            nr = x[:, self.nb_strain_off + self.nb_w*k        : self.nb_strain_off + self.nb_w*(k+1)]
+            tokens.append(torch.cat([th, nd, ns, nr], dim=1))
+        tokens = torch.stack(tokens, dim=1)
+
+        tok_embed  = self.token_proj(tokens)
+        glob_embed = self.global_proj(global_feat).unsqueeze(1)
+        seq = torch.cat([glob_embed, tok_embed], dim=1) + self.pos_embed
+        seq = self.encoder(seq)
+        return self.head(seq.reshape(B, -1))
+
+
+class LagSequenceAttentionAccelExtra(nn.Module):
+    """Same as LagSequenceAttentionAccelVar, plus n_extra additional scalar
+    global features appended at the very end (after accel) — e.g. a longer-
+    window smoothed velocity magnitude, to give the model a stable "is this a
+    hold" signal without bloating the per-lag token window itself (which was
+    found to hurt sharp-transition accuracy when lags alone were extended).
+    Layout: ...same as Var..., accel(3), extra(n_extra). Total = 190*n_lags+13+n_extra."""
+    def __init__(self, n_output: int, n_inputs: int, n_lags: int = 8, n_extra: int = 1,
+                 embed_dim: int = 128, n_heads: int = 4, n_layers: int = 2):
+        super().__init__()
+        expected = 190 * n_lags + 13 + n_extra
+        assert n_inputs == expected, f"n_inputs={n_inputs} doesn't match n_lags={n_lags}, n_extra={n_extra} (expected {expected})"
+        self.n_lags = n_lags
+        self.n_extra = n_extra
+        self.n_global = n_lags + 10
+        self.tool_hist_off, self.tool_hist_w = self.n_global, 9
+        self.nb_deform_off, self.nb_w = self.tool_hist_off + 9 * n_lags, 60
+        self.nb_stress_off = self.nb_deform_off + 60 * n_lags
+        self.nb_strain_off = self.nb_stress_off + 60 * n_lags
+        self.accel_off     = self.nb_strain_off + 60 * n_lags
+        self.extra_off     = self.accel_off + 3
+        token_dim = self.tool_hist_w + 3 * self.nb_w
+
+        self.token_proj  = nn.Linear(token_dim, embed_dim)
+        self.global_proj = nn.Linear(self.n_global + 3 + n_extra, embed_dim)
+        self.pos_embed   = nn.Parameter(torch.randn(1, n_lags + 1, embed_dim) * 0.02)
+
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=embed_dim, nhead=n_heads, dim_feedforward=embed_dim * 4,
+            dropout=0.1, activation='gelu', batch_first=True
+        )
+        self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=n_layers)
+
+        self.head = nn.Sequential(
+            nn.Linear(embed_dim * (n_lags + 1), 512), nn.GELU(),
+            nn.Linear(512, 256), nn.GELU(),
+            nn.Linear(256, n_output)
+        )
+
+    def forward(self, x):
+        B = x.shape[0]
+        global_feat = torch.cat([x[:, :self.n_global],
+                                  x[:, self.accel_off:self.accel_off+3],
+                                  x[:, self.extra_off:self.extra_off+self.n_extra]], dim=1)
+
+        tokens = []
+        for k in range(self.n_lags):
+            th = x[:, self.tool_hist_off + self.tool_hist_w*k : self.tool_hist_off + self.tool_hist_w*(k+1)]
+            nd = x[:, self.nb_deform_off + self.nb_w*k        : self.nb_deform_off + self.nb_w*(k+1)]
+            ns = x[:, self.nb_stress_off + self.nb_w*k        : self.nb_stress_off + self.nb_w*(k+1)]
+            nr = x[:, self.nb_strain_off + self.nb_w*k        : self.nb_strain_off + self.nb_w*(k+1)]
+            tokens.append(torch.cat([th, nd, ns, nr], dim=1))
+        tokens = torch.stack(tokens, dim=1)
+
+        tok_embed  = self.token_proj(tokens)
+        glob_embed = self.global_proj(global_feat).unsqueeze(1)
+        seq = torch.cat([glob_embed, tok_embed], dim=1) + self.pos_embed
+        seq = self.encoder(seq)
+        return self.head(seq.reshape(B, -1))
+
+
 class LiverGNN(nn.Module):
     """Graph conv net over the FEM mesh. Adjacency is derived from the
     stiffness matrix K (nonzero vertex-vertex coupling = mesh edge), so

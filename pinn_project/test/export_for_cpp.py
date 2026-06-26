@@ -14,9 +14,9 @@ sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'train'))
 
 import torch
 import numpy as np
-from pinn_model import LagSequenceAttentionAccel
+from pinn_model import LagSequenceAttentionAccelVar
 
-FULL_PATH    = '/home/yogyaahuja/sofa/pinn_project/train/tissue_pinn_seqattn_accel.pth'
+FULL_PATH    = '/home/yogyaahuja/sofa/pinn_project/train/tissue_pinn_contactweight_n8_beta5.0.pth'
 VERTICES_NPY = '/home/yogyaahuja/sofa/pinn_project/data/liver_vertices.npy'
 OUT_DIR      = '/home/yogyaahuja/sofa/pinn_project/cpp'
 
@@ -42,8 +42,10 @@ print(f"  n_inputs={n_in}, n_outputs={n_out}")
 print(f"  X_mean shape: {X_mean.shape}, Y_mean shape: {Y_mean.shape}")
 
 model_state = full_ckpt['model_state']
+n_lags = full_ckpt['n_lags']
+print(f"  n_lags={n_lags}")
 
-model = LagSequenceAttentionAccel(n_output=n_out, n_inputs=n_in)
+model = LagSequenceAttentionAccelVar(n_output=n_out, n_inputs=n_in, n_lags=n_lags)
 model.load_state_dict(model_state)
 model.eval()
 
