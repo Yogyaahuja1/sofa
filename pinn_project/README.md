@@ -104,8 +104,43 @@ want to watch it. `-n` sets how many simulation steps to run.
 cd /home/yogyaahuja/sofa/pinn_project/collect_data
 /home/yogyaahuja/sofa/build/bin/runSofa -g qt liver_collection.scn
 ```
-Move the device by hand to poke the liver. Output accumulates in
-`data/training_data.csv` (appends across runs — back it up before large changes).
+Move the device by hand to poke the liver — mix of gentle and hard pokes, varying
+locations, some short and some long touches. Output **appends** to
+`data/training_data.csv` across runs (it does not overwrite).
+
+**Before collecting**, back up the existing file if it has data you don't want mixed
+with the new batch:
+```bash
+cp data/training_data.csv data/training_data_backup_$(date +%Y%m%d).csv
+```
+
+**After collecting, validate before training on it** — this caught two real,
+significant data-quality bugs in this project (a 3-point vs 6-point anchor mismatch
+between collection and deployment scenes, and merged touch episodes from
+release-then-repoke). Don't skip this:
+
+1. **Scene physics must match deployment exactly.** `liver_collection.scn`'s
+   `FixedConstraint` indices (and any other physics parameter — contact distances,
+   solver tolerances, mass, `forceCoef`) must be identical to whatever scene you'll
+   deployment-test against (`liver_replay_*.scn`). If they ever diverge, the model
+   trains on a different physical system than it gets deployed on. Quick check: any
+   vertex listed in `FixedConstraint` should show **exactly 0.0** deformation
+   (`dx{i}`/`dy{i}`/`dz{i}`) in every row of the new data — if it shows real movement,
+   that vertex wasn't actually fixed when this batch was recorded.
+2. **No NaN/Inf, no displacement outliers** — sanity-check
+   `training_data.csv` for `inf`/`nan` and implausibly large position jumps between
+   consecutive rows within a session (anything beyond a few units in one row is
+   probably an explosion, not a real poke).
+3. **Check for merged sessions.** If you released contact and re-poked a different
+   spot quickly, the session-boundary detector (`collectEvery`'s force-crossing-
+   threshold logic) may not have registered a new session, merging two unrelated
+   touches under one `session_id`. Symptom: a large tool-position jump *within* a
+   single `session_id`, immediately following a row where force had dropped near
+   zero. If found, re-split that `session_id` into separate IDs at the jump point
+   before training — otherwise the model's lag-window history will bleed across
+   unrelated touches.
+4. **Check the force distribution** has both low and high values — a dataset of only
+   gentle pokes won't teach the model to predict hard contact, and vice versa.
 
 ### 2. Train a model
 ```bash
@@ -121,10 +156,11 @@ cd /home/yogyaahuja/sofa/pinn_project/test
 python3 export_for_cpp.py
 ```
 Writes `pinn_model_traced.pt`, `normalization_stats.csv`, `liver_vertices.csv` into
-`cpp/` — **you must rebuild `Sofa.Component.Haptics`-using binaries pick this up
-automatically at next launch** (no rebuild needed, the model is loaded at runtime,
-not compiled in — but do re-export any time you train a new model, the old one
-will otherwise keep being loaded silently).
+`cpp/`. No rebuild needed — the model is loaded at runtime, not compiled in — but
+**you must re-run this export after every training run**, including ones that don't
+change the architecture. `runSofa` picks up whatever is currently sitting in `cpp/`
+with no warning if it's stale, so a forgotten export silently deployment-tests the
+wrong (old) model.
 
 ### 4. Run the deployment test (scripted, no device needed)
 ```bash
@@ -138,6 +174,25 @@ python3 deployment_distance_plot.py       # writes the full + zoomed comparison 
 ```
 Pick `-n` generously — it must be large enough for the scripted replay to finish
 advancing through every row of `test_path.csv` (check the `[REPLAY] FINISHED` log line).
+
+**Picking a fair `--session-id`** matters more than it looks:
+- Check `Contact steps: N/total` in `compare_replay.py`'s output. If it's near 0,
+  ground truth never registered meaningful contact in *this replay* (even if the
+  original recording did) — relative-L2 becomes meaningless (huge/garbage percentages)
+  when dividing by near-zero force. Pick a different session.
+- **Replaying a recorded path does not reproduce its original force exactly** —
+  small differences in simulation history mean the same path can replay softer *or*
+  harder than it was originally recorded, sometimes substantially. Don't assume a
+  session picked for "moderate difficulty" by its recorded force will replay as
+  moderate; check the actual `replay_groundtruth.csv` force values after running it.
+- A good test session has: substantial contact (check 1 above), a build-up phase the
+  model can use its lag history on (not an instant onset spike — those hit a known,
+  separate weak point: zero-padded history at first contact), and ideally both rising
+  and sustained-contact portions, since the model behaves differently in each (see
+  "Current status" below).
+- `deployment_distance_plot.py --zoom-frac <0-1>` auto-picks the highest-mean-force
+  window of that size to zoom into — useful for visually inspecting exactly where
+  predictions diverge.
 
 ### 5. Run the deployment test with the real device (live hardware timing)
 ```bash
