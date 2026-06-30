@@ -67,6 +67,33 @@ pinn_project/
 
 ## Building
 
+### Quick build (the 4 commands, in order)
+
+```bash
+# 1. Fix hardcoded paths for this clone's actual location
+bash pinn_project/setup_paths.sh
+
+# 2. Build the main SOFA targets this project needs
+cd build
+cmake -DPLUGIN_GEOMAGIC=ON ..
+make -j$(nproc) Sofa.Component.Haptics Geomagic
+
+# 3. Install — required before step 4, see "Building the data-collection
+#    plugin" below for why
+make install
+
+# 4. Build the data-collection plugin (only needed if you'll be collecting
+#    new training data with a real device — skip if you're only running
+#    deployment-test/replay scenes)
+mkdir -p ../pinn_project/collect_data/build
+cd ../pinn_project/collect_data/build
+cmake .. && make -j$(nproc)
+```
+
+If anything in steps 2-4 errors, see the troubleshooting sections below —
+the two most common first-time errors (missing CUDA compiler, missing
+Geomagic target) are both covered there.
+
 ### First step on any new clone: fix hardcoded paths
 
 ```bash
@@ -154,8 +181,20 @@ standalone plugin, not built as part of the main SOFA build. **Its `CMakeLists.t
 lives in `pinn_project/collect_data/`, not in `pinn_project/` itself** — there is no
 CMake project directly under `pinn_project/` (that folder just holds several unrelated
 subdirectories: `train/`, `test/`, `cpp/`, `data/`, none of them CMake projects). Make
-sure the `build/` directory is created one level *inside* `collect_data/`, not next to it:
+sure the `build/` directory is created one level *inside* `collect_data/`, not next to it.
+
+**You must run `make install` in the main `build/` directory first.** This plugin's
+`CMakeLists.txt` finds SOFA's libraries via `find_package`, which looks under
+`build/install/lib/cmake` — that directory is only populated by `make install`, not by
+the plain `make` from step 2 above. Skipping this makes `cmake ..` fail outright with
+"could not find a package configuration file" (confirmed on a fresh clone — this isn't
+hypothetical). Re-run `make install` any time you rebuild `Sofa.Component.Haptics` too,
+or this plugin will silently link against a stale copy (see the `runSofa` binary warning
+above for the same install-tree-goes-stale failure mode).
 ```bash
+cd /home/yogyaahuja/sofa/build
+make install
+
 mkdir -p /home/yogyaahuja/sofa/pinn_project/collect_data/build
 cd /home/yogyaahuja/sofa/pinn_project/collect_data/build
 cmake .. && make -j$(nproc)
