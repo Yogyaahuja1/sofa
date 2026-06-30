@@ -225,6 +225,22 @@ std::array<float, 3> PINNPredictor::predictForce(
     for (int i = 0; i < N_IN; ++i)
         X_norm[i] = (X[i] - X_mean_[i]) / (X_std_[i] + 1e-8f);
 
+    // ── DEBUG: dump tool position + actual neighbor deformation every call, to check
+    // whether the replay's re-simulated deformation diverges from the recording at
+    // the same position, same way we checked position drift. ──
+    {
+        static std::ofstream seqdbg("/tmp/cpp_position_seq.csv");
+        static std::ofstream defdbg("/tmp/cpp_deform_seq.csv");
+        static int seq_call = 0;
+        ++seq_call;
+        defdbg << seq_call;
+        for (int n = 0; n < N_NB; ++n)
+            defdbg << "," << nb[n] << "," << new_ddx[nb[n]] << "," << new_ddy[nb[n]] << "," << new_ddz[nb[n]];
+        defdbg << "\n";
+        defdbg.flush();
+        seqdbg << seq_call << "," << tx << "," << ty << "," << tz << "\n";
+        seqdbg.flush();
+    }
     // ── DEBUG: one-shot raw feature dump for direct comparison against Python ───
     {
         static bool dumped = false;

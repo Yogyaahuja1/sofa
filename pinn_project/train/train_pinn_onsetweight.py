@@ -28,13 +28,28 @@ reported headline metric.
 import os as _os
 SOFA_ROOT = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
 
+import argparse
 import torch
 import torch.nn as nn
 import numpy as np
 import pandas as pd
 from torch.utils.data import DataLoader, TensorDataset
 import matplotlib.pyplot as plt
-from pinn_model import LiverDualAttention
+from pinn_model import LagSequenceAttentionAccelVar
+
+# ============================================================
+# CONTACT-WEIGHT EXPERIMENT — same pipeline as the lag sweep, fixed at the
+# already-established best n_lags=8, testing whether an extra loss weight for
+# sustained-contact rows (separate from f_weight's force-magnitude weighting)
+# improves sustained-hold accuracy. Appends one summary line per run to
+# contactweight_results.txt for direct comparison against the n_lags=8 baseline.
+# ============================================================
+parser = argparse.ArgumentParser()
+parser.add_argument('--n-lags', type=int, default=8)
+parser.add_argument('--epochs', type=int, default=1500)
+parser.add_argument('--sustain-beta', type=float, default=5.0)  # established best, held fixed
+parser.add_argument('--onset-beta', type=float, default=1.0)
+args = parser.parse_args()
 
 # ============================================================
 # CONFIGURATION
@@ -43,11 +58,11 @@ CSV_PATH      = f'{SOFA_ROOT}/pinn_project/data/training_data.csv'
 N_VERTICES    = 181
 FIXED_INDICES = [3, 39, 64]             # from FixedConstraint in scene
 BATCH_SIZE    = 64
-N_EPOCHS      = 7000
+N_EPOCHS      = args.epochs
 LR            = 3e-4
 TRAIN_SPLIT   = 0.8
 N_NEIGHBOURS  = 20
-N_LAGS        = 5
+N_LAGS        = args.n_lags
 W_FORCE       = 0.5
 W_DEFORM      = 1.0
 SEED          = 42
@@ -94,6 +109,50 @@ df['tool_fz'] = df['tool_fz'].clip(-100.0, 100.0)
 
 print(f"Rows after cleaning: {len(df)}")
 N_rows = len(df)
+
+# ============================================================
+# Sustained-contact flag: rows that are part of a run of >=10 consecutive
+# rows with |F|>3N, within the same session. f_weight (added later) already
+# upweights by force MAGNITUDE, but a long, moderate-force hold doesn't get
+# much boost from that — this is a separate axis (temporal under-representation
+# of sustained contact, confirmed: ~72% of sessions have no hold >=5 rows).
+# ============================================================
+df_fmag = np.linalg.norm(df[['tool_fx', 'tool_fy', 'tool_fz']].values, axis=1)
+is_sustained = np.zeros(N_rows, dtype=np.float32)
+for sid in df['session_id'].unique():
+    if sid == 0:
+        continue
+    idx = df.index[df['session_id'] == sid].values
+    high = df_fmag[idx] > 3.0
+    run_id = np.zeros(len(high), dtype=int)
+    cur = 0
+    for i in range(len(high)):
+        cur = cur + 1 if high[i] else 0
+        run_id[i] = cur
+    if run_id.max() >= 10:
+        is_sustained[idx[high]] = 1.0
+print(f"Sustained-contact rows flagged: {int(is_sustained.sum())} / {N_rows} "
+      f"({100*is_sustained.sum()/N_rows:.1f}%)")
+sustained_tensor_all = torch.FloatTensor(is_sustained.copy())
+
+# ============================================================
+# Onset flag: the first N_ONSET_ROWS rows of each non-zero session_id run —
+# the zero-padded-history window where the model has no real lag context yet.
+# Confirmed underrepresented the same way sustained-contact was (5.84% of all
+# rows), and confirmed in real C++ deployment (session 18) to miss a sharp
+# onset force spike entirely while the rest of that session tracked fine.
+# ============================================================
+N_ONSET_ROWS = 5
+is_onset = np.zeros(N_rows, dtype=np.float32)
+sids_arr = df['session_id'].values
+for sid in df['session_id'].unique():
+    if sid == 0:
+        continue
+    idx = df.index[df['session_id'] == sid].values
+    is_onset[idx[:N_ONSET_ROWS]] = 1.0
+print(f"Onset rows flagged: {int(is_onset.sum())} / {N_rows} "
+      f"({100*is_onset.sum()/N_rows:.1f}%)")
+onset_tensor_all = torch.FloatTensor(is_onset.copy())
 
 # Pick the most active vertex (skip fixed indices) — for correlation diagnostics
 dy_cols_diag = [c for c in df.columns if c.startswith('dy')]
@@ -268,10 +327,31 @@ contact_features = np.stack(
     [min_dist_to_mesh, delta_min_dist, lag1_contact], axis=1
 ).astype(np.float32)  # (N, 3)
 
+# Acceleration (wider lag1-vs-lag3 baseline, NOT adjacent-step — validated via
+# correlation test: leading corr(accel_t, |dF| over next 3 steps) = 0.66, the
+# strongest predictive feature found so far. Adjacent-step differencing would
+# amplify position-sensor noise; this wider baseline averages it out while still
+# catching genuine sustained acceleration from fast flicks.
+accel = np.zeros((N_rows, 3), dtype=np.float32)
+for row in range(N_rows):
+    src1, src3 = max(0, row - 1), max(0, row - 3)
+    if session_ids[src1] != session_ids[row] or session_ids[src3] != session_ids[row]:
+        continue
+    dt = real_time_vals[src1] - real_time_vals[src3]
+    if dt < 1e-4:
+        continue
+    accel[row, 0] = (tool_vx_all[src1] - tool_vx_all[src3]) / dt
+    accel[row, 1] = (tool_vy_all[src1] - tool_vy_all[src3]) / dt
+    accel[row, 2] = (tool_vz_all[src1] - tool_vz_all[src3]) / dt
+accel = np.clip(accel, -500.0, 500.0)
+
 corr_dt_pred,    _ = pearsonr(dt_pred_vals[:, 0], delta_best)
 corr_min_dist,   _ = pearsonr(min_dist_to_mesh,   force_mag_all)
 corr_delta_dist, _ = pearsonr(delta_min_dist,      force_mag_all)
 corr_lag1_cont,  _ = pearsonr(lag1_contact,        force_mag_all)
+accel_mag = np.linalg.norm(accel, axis=1)
+corr_accel, _ = pearsonr(accel_mag, force_mag_all)
+print(f"accel_mag corr with force_mag (simultaneous):       {corr_accel:.3f}")
 print(f"dt_pred corr with target delta:                     {corr_dt_pred:.3f}")
 print(f"min_dist_to_mesh corr with force_mag:               {corr_min_dist:.3f}")
 print(f"delta_min_dist corr with force_mag:                 {corr_delta_dist:.3f}")
@@ -308,19 +388,21 @@ X_combined = np.concatenate([
     nb_deform_features,           # (N, 300) idx  60-359
     nb_stress_features,           # (N, 300) idx 360-659
     nb_realstrain_features,       # (N, 300) idx 660-959
-], axis=1).astype(np.float32)      # (N, 960)
+    accel,                        # (N, 3)   idx  960-962  NEW — lag1-vs-lag3 acceleration
+], axis=1).astype(np.float32)      # (N, 963)
 
 N_INPUTS = X_combined.shape[1]
 X_raw_tensor = torch.FloatTensor(X_combined.copy())
-print(f"Total inputs: {N_INPUTS}")  # should print 960
+print(f"Total inputs: {N_INPUTS}")  # should print 963
 
 # Velocity column indices (for outlier clamping):
 # current tool_vx/vy/vz (idx 9-11) + tool_vx/vy/vz at each of the 5 history lags
-# contact_features occupy idx 12-14; tool_hist starts at 15
+# contact_features occupy idx 12-14; tool_hist starts at 15; accel at the new tail 960-962
 vel_indices = [9, 10, 11]
 for k in range(N_LAGS):
     base = 15 + 9 * k          # start of lag-k's 9-value block within tool_hist_features
     vel_indices += [base + 3, base + 4, base + 5]
+vel_indices += [960, 961, 962]
 
 # ============================================================
 # STEP 7: ASSEMBLE Y (537) — force (3, primary) + deformation delta (534)
@@ -352,16 +434,24 @@ print(f"Total outputs: {N_OUT} (force={N_FORCE}, deform={N_OUT_DEFORM})")
 perm_all = torch.randperm(N_rows)
 X_all = X_raw_tensor[perm_all]
 Y_all = Y_raw_tensor[perm_all]
+sustained_all = sustained_tensor_all[perm_all]
+onset_all = onset_tensor_all[perm_all]
 
 n_train = int(TRAIN_SPLIT * len(X_all))
 X_train_raw = X_all[:n_train]
 Y_train_raw = Y_all[:n_train]
 X_test_raw  = X_all[n_train:]
+sustained_test_raw = sustained_all[n_train:]
+onset_test_raw = onset_all[n_train:]
 Y_test_raw  = Y_all[n_train:]
+sustained_train_raw = sustained_all[:n_train]
+onset_train_raw = onset_all[:n_train]
 
 perm = torch.randperm(len(X_train_raw))
 X_train_raw = X_train_raw[perm]
 Y_train_raw = Y_train_raw[perm]
+sustained_train_raw = sustained_train_raw[perm]
+onset_train_raw = onset_train_raw[perm]
 
 print(f"  Input  shape: {X_train_raw.shape}")
 print(f"  Output shape: {Y_train_raw.shape}")
@@ -394,7 +484,7 @@ print(f"  X std min/max: {X_std.min().item():.6f} / {X_std.max().item():.6f}")
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 print(f"\nDevice: {device}")
 
-model = LiverDualAttention(n_output=N_OUT, n_inputs=N_INPUTS).to(device)
+model = LagSequenceAttentionAccelVar(n_output=N_OUT, n_inputs=N_INPUTS, n_lags=N_LAGS).to(device)
 n_params = sum(p.numel() for p in model.parameters())
 print(f"Parameters: {n_params:,}")
 
@@ -403,7 +493,10 @@ scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
     optimizer, T_0=1000, T_mult=2, eta_min=1e-6
 )
 
-dataset  = TensorDataset(X_train.to(device), Y_train.to(device))
+SUSTAIN_BETA = args.sustain_beta  # extra weight multiplier for sustained-contact rows (held at established best, 5.0)
+ONSET_BETA   = args.onset_beta    # extra weight multiplier for onset rows (this experiment)
+
+dataset  = TensorDataset(X_train.to(device), Y_train.to(device), sustained_train_raw.to(device), onset_train_raw.to(device))
 loader   = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True)
 y_std_f  = Y_std[:N_FORCE].detach().clone().to(device)
 y_mean_f = Y_mean[:N_FORCE].detach().clone().to(device)
@@ -412,22 +505,27 @@ history = {'epoch': [], 'total': [], 'force': [], 'deform': []}
 
 best_val_loss = float('inf')
 best_epoch    = 0
-MODEL_BEST    = 'tissue_pinn_dualattn_best.pth'
+MODEL_BEST    = f'tissue_pinn_onsetweight_n{N_LAGS}_best.pth'
+EARLY_STOP_PATIENCE = 800  # epochs without val improvement before stopping
 
 print("\nTraining...\n")
 for epoch in range(N_EPOCHS):
     model.train()
     epoch_total = epoch_force = epoch_deform = 0.0
 
-    for X_batch, Y_batch in loader:
+    for X_batch, Y_batch, sustain_batch, onset_batch in loader:
         u_pred = model(X_batch)
 
-        # weighted force loss — upweight high-force samples (rare but critical)
+        # weighted force loss — upweight high-force samples (rare but critical),
+        # sustained-contact samples (temporal under-representation), AND onset
+        # samples (zero-padded-history rows, 5.84% of all data, confirmed missed
+        # entirely in real C++ deployment on session 18's onset spike).
         pred_f_N = u_pred[:, :N_FORCE] * y_std_f + y_mean_f
         true_f_N = Y_batch[:, :N_FORCE] * y_std_f + y_mean_f
         f_mag    = torch.norm(true_f_N, dim=1, keepdim=True).detach()
         f_weight = 1.0 + f_mag / (f_mag.mean() + 1e-8)
-        L_force  = (f_weight * ((u_pred[:, :N_FORCE] - Y_batch[:, :N_FORCE]) ** 2).mean(dim=1, keepdim=True)).mean()
+        contact_weight = 1.0 + SUSTAIN_BETA * sustain_batch.unsqueeze(1) + ONSET_BETA * onset_batch.unsqueeze(1)
+        L_force  = (f_weight * contact_weight * ((u_pred[:, :N_FORCE] - Y_batch[:, :N_FORCE]) ** 2).mean(dim=1, keepdim=True)).mean()
         L_deform = torch.mean((u_pred[:, N_FORCE:] - Y_batch[:, N_FORCE:]) ** 2)
         L = W_FORCE * L_force + W_DEFORM * L_deform
 
@@ -454,6 +552,10 @@ for epoch in range(N_EPOCHS):
             best_val_loss = val_loss
             best_epoch    = epoch
             torch.save(model.state_dict(), MODEL_BEST)
+        elif epoch - best_epoch >= EARLY_STOP_PATIENCE:
+            print(f"\nEarly stopping at epoch {epoch} — no val improvement in {EARLY_STOP_PATIENCE} epochs "
+                  f"(best was epoch {best_epoch}, val loss {best_val_loss:.6f})")
+            break
 
     if epoch % 200 == 0:
         history['epoch'].append(epoch)
@@ -503,6 +605,27 @@ with torch.no_grad():
     force_rel_err_robust = torch.norm(force_pred_N[robust_mask] - force_true_N[robust_mask]) / \
                            (torch.norm(force_true_N[robust_mask]) + 1e-8)
 
+    # Sustained-contact-specific error — the actual thing this experiment targets,
+    # not just overall force error (which sustained rows are a minority of).
+    sustain_mask = sustained_test_raw.bool()
+    if sustain_mask.sum() > 0:
+        force_rel_err_sustained = torch.norm(force_pred_N[sustain_mask] - force_true_N[sustain_mask]) / \
+                                   (torch.norm(force_true_N[sustain_mask]) + 1e-8)
+    else:
+        force_rel_err_sustained = torch.tensor(float('nan'))
+    print(f"Sustained-contact test rows: {int(sustain_mask.sum())} / {n_test}")
+
+    # Onset-specific error — the metric this experiment actually targets.
+    onset_mask = onset_test_raw.bool()
+    if onset_mask.sum() > 0:
+        force_rel_err_onset = torch.norm(force_pred_N[onset_mask] - force_true_N[onset_mask]) / \
+                               (torch.norm(force_true_N[onset_mask]) + 1e-8)
+    else:
+        force_rel_err_onset = torch.tensor(float('nan'))
+    print(f"Onset test rows: {int(onset_mask.sum())} / {n_test}")
+    print(f"Relative L2 error (force, onset rows only): {force_rel_err_onset.item()*100:.2f}%")
+    print(f"Relative L2 error (force, sustained-contact rows only): {force_rel_err_sustained.item()*100:.2f}%")
+
     print(f"\n--- FORCE (primary output) ---")
     print(f"Relative L2 error (force):  {force_rel_err.item()*100:.2f}%")
     print(f"Relative L2 (excl. worst {k_outliers}/{n_test} samples): {force_rel_err_robust.item()*100:.2f}%")
@@ -548,8 +671,8 @@ with torch.no_grad():
     axes[1].legend()
 
     plt.tight_layout()
-    plt.savefig('sample_comparison_dualattn.png', dpi=150)
-    print("\nSample comparison saved to sample_comparison_dualattn.png")
+    plt.savefig('sample_comparison_seqattn_accel.png', dpi=150)
+    print("\nSample comparison saved to sample_comparison_seqattn_accel.png")
 
 # ============================================================
 # STEP 11: SAVE
@@ -571,9 +694,25 @@ torch.save({
     'epoch':       N_EPOCHS,
     'force_rel_err': force_rel_err.item(),
     'force_rel_err_robust': force_rel_err_robust.item(),
+    'force_rel_err_sustained': force_rel_err_sustained.item(),
+    'force_rel_err_onset': force_rel_err_onset.item(),
     'deform_rel_err': deform_rel_err.item(),
-}, 'tissue_pinn_dualattn.pth')
-print("Model saved to tissue_pinn_dualattn.pth")
+    'n_lags': N_LAGS,
+    'sustain_beta': SUSTAIN_BETA,
+    'onset_beta': ONSET_BETA,
+}, f'tissue_pinn_onsetweight_n{N_LAGS}_beta{ONSET_BETA}.pth')
+print(f"Model saved to tissue_pinn_onsetweight_n{N_LAGS}_beta{ONSET_BETA}.pth")
+
+with open('onsetweight_results.txt', 'a') as f:
+    f.write(f"n_lags={N_LAGS:3d}  sustain_beta={SUSTAIN_BETA:.2f}  onset_beta={ONSET_BETA:.2f}  epochs_run={best_epoch:5d}  "
+            f"best_val_loss={best_val_loss:.6f}  "
+            f"force_rel_l2={force_rel_err.item()*100:6.2f}%  "
+            f"force_rel_l2_robust={force_rel_err_robust.item()*100:6.2f}%  "
+            f"force_rel_l2_sustained={force_rel_err_sustained.item()*100:6.2f}%  "
+            f"force_rel_l2_onset={force_rel_err_onset.item()*100:6.2f}%  "
+            f"deform_rel_l2={deform_rel_err.item()*100:6.2f}%  "
+            f"params={n_params:,}\n")
+print("Summary appended to onsetweight_results.txt")
 
 # ============================================================
 # STEP 12: PLOT LOSS CURVES
@@ -593,5 +732,5 @@ plt.bar(['Force Rel L2 %', 'Deform Rel L2 %'],
 plt.title('Validation vs FEM')
 
 plt.tight_layout()
-plt.savefig('training_results_dualattn.png', dpi=150)
-print("Plot saved to training_results_dualattn.png")
+plt.savefig('training_results_seqattn_accel.png', dpi=150)
+print("Plot saved to training_results_seqattn_accel.png")

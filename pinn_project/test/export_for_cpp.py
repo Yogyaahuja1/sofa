@@ -8,6 +8,8 @@ Produces:
 Run once after training:
   python3 export_for_cpp.py
 """
+import os as _os
+SOFA_ROOT = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
 
 import sys, os
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'train'))
@@ -16,9 +18,9 @@ import torch
 import numpy as np
 from pinn_model import LagSequenceAttentionAccelVar
 
-FULL_PATH    = '/home/yogyaahuja/sofa/pinn_project/train/tissue_pinn_contactweight_n8_beta5.0.pth'
-VERTICES_NPY = '/home/yogyaahuja/sofa/pinn_project/data/liver_vertices.npy'
-OUT_DIR      = '/home/yogyaahuja/sofa/pinn_project/cpp'
+FULL_PATH    = f'{SOFA_ROOT}/pinn_project/train/tissue_pinn_contactweight_n8_beta5.0.pth'
+VERTICES_NPY = f'{SOFA_ROOT}/pinn_project/data/liver_vertices.npy'
+OUT_DIR      = f'{SOFA_ROOT}/pinn_project/cpp'
 
 os.makedirs(OUT_DIR, exist_ok=True)
 

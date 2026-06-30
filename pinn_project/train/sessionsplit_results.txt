@@ -1,0 +1,1 @@
+n_lags=  8  sustain_beta=5.00  epochs_run=  200  best_val_loss=0.430986  force_rel_l2= 50.49%  force_rel_l2_robust= 46.89%  force_rel_l2_sustained= 51.67%  deform_rel_l2= 56.82%  held_out_sessions=[7, 15, 20, 23, 30, 31, 35, 40, 46, 49, 60, 68, 70, 71, 73, 88, 89, 95, 111, 115, 116, 123, 132, 142, 146, 162, 168]  params=1,284,505

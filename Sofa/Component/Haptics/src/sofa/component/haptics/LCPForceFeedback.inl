@@ -30,6 +30,7 @@
 #include <algorithm>
 #include <mutex>
 #include <iostream>
+#include <fstream>
 
 namespace
 {
@@ -124,6 +125,8 @@ template <class DataTypes>
 LCPForceFeedback<DataTypes>::LCPForceFeedback()
     : forceCoef(initData(&forceCoef, 0.03, "forceCoef","multiply haptic force by this coef."))
     , d_usePINN(initData(&d_usePINN, true, "usePINN", "Set false in data-collection scenes to skip PINN forward pass"))
+    , d_liveComparisonLog(initData(&d_liveComparisonLog, std::string(""), "liveComparisonLog",
+        "Path to a CSV logging PINN's prediction vs the real force at the same live instant. Empty = no logging."))
     , solverTimeout(initData(&solverTimeout, 0.0008, "solverTimeout","max time to spend solving constraints."))
     , d_solverMaxIt(initData(&d_solverMaxIt, 100, "solverMaxIt", "max iteration to spend solving constraints"))
     , d_derivRotations(initData(&d_derivRotations, false, "derivRotations", "if true, deriv the rotations when updating the violations"))
@@ -760,6 +763,25 @@ void LCPForceFeedback<DataTypes>::handleEvent(sofa::core::objectmodel::Event *ev
 
                         std::lock_guard<std::mutex> lk(m_pinnCacheMutex);
                         m_pinnCachedForce = sofa::type::Vec3d(f[0], f[1], f[2]);
+
+                        // ── Live comparison log: PINN's prediction vs the real force at
+                        // this exact instant, both from genuine continuous real-time data
+                        // (no replay involved) — see d_liveComparisonLog comment.
+                        const std::string& cmpPath = d_liveComparisonLog.getValue();
+                        if (!cmpPath.empty())
+                        {
+                            static std::ofstream cmpLog;
+                            static bool cmpLogOpened = false;
+                            if (!cmpLogOpened)
+                            {
+                                cmpLog.open(cmpPath);
+                                cmpLog << "elapsed,real_fx,real_fy,real_fz,pinn_fx,pinn_fy,pinn_fz\n";
+                                cmpLogOpened = true;
+                            }
+                            cmpLog << elapsed << "," << pfx << "," << pfy << "," << pfz << ","
+                                   << f[0] << "," << f[1] << "," << f[2] << "\n";
+                            cmpLog.flush();
+                        }
                     }
                 }
             }

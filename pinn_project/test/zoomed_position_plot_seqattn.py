@@ -6,6 +6,8 @@ sample markers so step-by-step prediction behaviour is visible.
 Usage:
   python3 zoomed_position_plot.py --session-id 35 --start-time 60 --duration 2.0
 """
+import os as _os
+SOFA_ROOT = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
 
 import sys, os, argparse
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'train'))
@@ -18,9 +20,9 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from pinn_model import LagSequenceAttention
 
-MODEL_PATH    = '/home/yogyaahuja/sofa/pinn_project/train/tissue_pinn_seqattn.pth'
-CSV_PATH      = '/home/yogyaahuja/sofa/pinn_project/data/training_data.csv'
-VERTICES_PATH = '/home/yogyaahuja/sofa/pinn_project/data/liver_vertices.npy'
+MODEL_PATH    = f'{SOFA_ROOT}/pinn_project/train/tissue_pinn_seqattn.pth'
+CSV_PATH      = f'{SOFA_ROOT}/pinn_project/data/training_data.csv'
+VERTICES_PATH = f'{SOFA_ROOT}/pinn_project/data/liver_vertices.npy'
 N_NEIGHBOURS, N_LAGS, N_VERTICES = 20, 5, 181
 FIXED_INDICES = [3, 39, 64]
 SEED = 42
@@ -227,6 +229,6 @@ ax.legend(loc='upper right', fontsize=9)
 ax.grid(True, alpha=0.3)
 
 plt.tight_layout()
-out_path = '/home/yogyaahuja/sofa/pinn_project/test/zoomed_position_force_seqattn.png'
+out_path = f'{SOFA_ROOT}/pinn_project/test/zoomed_position_force_seqattn.png'
 plt.savefig(out_path, dpi=150, bbox_inches='tight')
 print(f"\nSaved: {out_path}")

@@ -1,3 +1,5 @@
+import os as _os
+SOFA_ROOT = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
 import torch
 import torch.nn as nn
 import numpy as np
@@ -5,7 +7,7 @@ import numpy as np
 import re
 import numpy as np
 
-with open('/home/yogyaahuja/sofa/build/bin/liver_physics.txt') as f:
+with open(f'{SOFA_ROOT}/build/bin/liver_physics.txt') as f:
     txt = f.read()
 
 nums = [float(x) for x in re.findall(
@@ -360,6 +362,67 @@ class LagSequenceAttentionAccelVar(nn.Module):
             ns = x[:, self.nb_stress_off + self.nb_w*k        : self.nb_stress_off + self.nb_w*(k+1)]
             nr = x[:, self.nb_strain_off + self.nb_w*k        : self.nb_strain_off + self.nb_w*(k+1)]
             tokens.append(torch.cat([th, nd, ns, nr], dim=1))
+        tokens = torch.stack(tokens, dim=1)
+
+        tok_embed  = self.token_proj(tokens)
+        glob_embed = self.global_proj(global_feat).unsqueeze(1)
+        seq = torch.cat([glob_embed, tok_embed], dim=1) + self.pos_embed
+        seq = self.encoder(seq)
+        return self.head(seq.reshape(B, -1))
+
+
+class LagSequenceAttentionAccelStress(nn.Module):
+    """Same as LagSequenceAttentionAccelVar, plus a 4th per-lag neighbourhood
+    block: nb_realstress (60*n_lags, rsxx/rsyy/rszz from getLastStress()) —
+    ablation test for whether real (Hooke's law) stress adds signal beyond the
+    already-used real strain (rexx/reyy/rezz) and stress-proxy (sax/say/saz).
+    Input layout: dt_cum(n_lags) + dt_pred(1) + pos_vel(6) + contact(3)
+    + tool_hist(9*n_lags) + nb_deform(60*n_lags) + nb_stress(60*n_lags)
+    + nb_strain(60*n_lags) + nb_realstress(60*n_lags) + accel(3)
+    = 250*n_lags + 13 total."""
+    def __init__(self, n_output: int, n_inputs: int, n_lags: int = 8,
+                 embed_dim: int = 128, n_heads: int = 4, n_layers: int = 2):
+        super().__init__()
+        expected = 250 * n_lags + 13
+        assert n_inputs == expected, f"n_inputs={n_inputs} doesn't match n_lags={n_lags} (expected {expected})"
+        self.n_lags = n_lags
+        self.n_global = n_lags + 10
+        self.tool_hist_off, self.tool_hist_w = self.n_global, 9
+        self.nb_deform_off, self.nb_w = self.tool_hist_off + 9 * n_lags, 60
+        self.nb_stress_off     = self.nb_deform_off + 60 * n_lags
+        self.nb_strain_off     = self.nb_stress_off + 60 * n_lags
+        self.nb_realstress_off = self.nb_strain_off + 60 * n_lags
+        self.accel_off         = self.nb_realstress_off + 60 * n_lags
+        token_dim = self.tool_hist_w + 4 * self.nb_w  # 249
+
+        self.token_proj  = nn.Linear(token_dim, embed_dim)
+        self.global_proj = nn.Linear(self.n_global + 3, embed_dim)
+        self.pos_embed   = nn.Parameter(torch.randn(1, n_lags + 1, embed_dim) * 0.02)
+
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=embed_dim, nhead=n_heads, dim_feedforward=embed_dim * 4,
+            dropout=0.1, activation='gelu', batch_first=True
+        )
+        self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=n_layers)
+
+        self.head = nn.Sequential(
+            nn.Linear(embed_dim * (n_lags + 1), 512), nn.GELU(),
+            nn.Linear(512, 256), nn.GELU(),
+            nn.Linear(256, n_output)
+        )
+
+    def forward(self, x):
+        B = x.shape[0]
+        global_feat = torch.cat([x[:, :self.n_global], x[:, self.accel_off:self.accel_off+3]], dim=1)
+
+        tokens = []
+        for k in range(self.n_lags):
+            th  = x[:, self.tool_hist_off + self.tool_hist_w*k     : self.tool_hist_off + self.tool_hist_w*(k+1)]
+            nd  = x[:, self.nb_deform_off + self.nb_w*k             : self.nb_deform_off + self.nb_w*(k+1)]
+            ns  = x[:, self.nb_stress_off + self.nb_w*k             : self.nb_stress_off + self.nb_w*(k+1)]
+            nr  = x[:, self.nb_strain_off + self.nb_w*k             : self.nb_strain_off + self.nb_w*(k+1)]
+            nrs = x[:, self.nb_realstress_off + self.nb_w*k         : self.nb_realstress_off + self.nb_w*(k+1)]
+            tokens.append(torch.cat([th, nd, ns, nr, nrs], dim=1))
         tokens = torch.stack(tokens, dim=1)
 
         tok_embed  = self.token_proj(tokens)

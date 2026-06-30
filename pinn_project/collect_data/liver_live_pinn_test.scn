@@ -1,0 +1,161 @@
+<?xml version="1.0" ?>
+<Node name="root" dt="0.005" gravity="0 0 0">
+
+    <RequiredPlugin name="PINNDataCollector"/>
+    <RequiredPlugin name="Geomagic"/>
+    <RequiredPlugin name="Sofa.Component.AnimationLoop"/>
+    <RequiredPlugin name="Sofa.Component.Collision.Detection.Algorithm"/>
+    <RequiredPlugin name="Sofa.Component.Collision.Detection.Intersection"/>
+    <RequiredPlugin name="Sofa.Component.Collision.Geometry"/>
+    <RequiredPlugin name="Sofa.Component.Collision.Response.Contact"/>
+    <RequiredPlugin name="Sofa.Component.Constraint.Lagrangian.Correction"/>
+    <RequiredPlugin name="Sofa.Component.Constraint.Lagrangian.Solver"/>
+    <RequiredPlugin name="Sofa.Component.Constraint.Projective"/>
+    <RequiredPlugin name="Sofa.Component.Controller"/>
+    <RequiredPlugin name="Sofa.Component.Haptics"/>
+    <RequiredPlugin name="Sofa.Component.IO.Mesh"/>
+    <RequiredPlugin name="Sofa.Component.LinearSolver.Iterative"/>
+    <RequiredPlugin name="Sofa.Component.Mapping.Linear"/>
+    <RequiredPlugin name="Sofa.Component.Mapping.NonLinear"/>
+    <RequiredPlugin name="Sofa.Component.Mass"/>
+    <RequiredPlugin name="Sofa.Component.ODESolver.Backward"/>
+    <RequiredPlugin name="Sofa.Component.SceneUtility"/>
+    <RequiredPlugin name="Sofa.Component.SolidMechanics.FEM.Elastic"/>
+    <RequiredPlugin name="Sofa.Component.SolidMechanics.Spring"/>
+    <RequiredPlugin name="Sofa.Component.StateContainer"/>
+    <RequiredPlugin name="Sofa.Component.Topology.Container.Constant"/>
+    <RequiredPlugin name="Sofa.Component.Topology.Container.Dynamic"/>
+    <RequiredPlugin name="Sofa.Component.Visual"/>
+    <RequiredPlugin name="Sofa.GL.Component.Rendering3D"/>
+    <RequiredPlugin name="SofaMatrix"/>
+    <RequiredPlugin name="Sofa.Component.LinearSolver.Direct"/>
+
+    <VisualStyle displayFlags="showVisualModels hideCollisionModels hideBehaviorModels hideMappings hideForceFields"/>
+
+    <DefaultVisualManagerLoop/>
+    <CollisionPipeline depth="6"/>
+    <BruteForceBroadPhase/>
+    <BVHNarrowPhase/>
+    <CollisionResponse response="FrictionContactConstraint"/>
+    <LocalMinDistance alarmDistance="0.6" contactDistance="0.35"/>
+    <FreeMotionAnimationLoop/>
+    <LCPConstraintSolver tolerance="0.001" maxIt="1000"/>
+
+    <GeomagicDriver name="GeomagicDevice"
+        deviceName="Default Device"
+        scale="1"
+        positionBase="0 0 0"
+        orientationBase="0 0.707 0 -0.707"
+        maxLinearSpeed="60"/>
+
+    <!-- ===== LIVER NODE ===== -->
+    <Node name="Liver" gravity="0 0 0">
+        <EulerImplicitSolver rayleighStiffness="0.1" rayleighMass="0.5"/>
+        <SparseLDLSolver factorizeEvery="1" name="directSolver" template="CompressedRowSparseMatrixMat3x3d"/>
+
+        <!-- GlobalSystemMatrixExporter disabled — synchronous 543×543 CSV write was costing fps
+        <GlobalSystemMatrixExporter name="matrix_exporter"
+            filename="/home/yogyaahuja/sofa/pinn_project/data/ax_b/A"
+            format="csv"
+            exportEveryNumberOfSteps="30"/>
+        -->
+
+        <MeshGmshLoader name="meshLoader" filename="mesh/liver.msh"/>
+        <TetrahedronSetTopologyContainer name="topo" src="@meshLoader"/>
+        <MechanicalObject name="liverDofs" src="@meshLoader"/>
+        <TetrahedronSetGeometryAlgorithms template="Vec3d"/>
+        <DiagonalMass massDensity="1" topology="@topo" geometryState="@liverDofs"/>
+        <TetrahedronFEMForceField template="Vec3d"
+            method="large"
+            poissonRatio="0.3"
+            youngModulus="1500"/>
+        <LinearSolverConstraintCorrection/>
+        <FixedConstraint indices="3 39 64 112 122 127"/>
+
+        <!-- Data collector — sits inside Liver node so it finds liverDofs automatically -->
+        <!-- Tool node is named "Instrument" with MechanicalObject "instrumentState" (Rigid3d) -->
+        <DataCollector
+            outputFile="/home/yogyaahuja/sofa/pinn_project/data/training_data.csv"
+            collectEvery="3"
+            dumpAxbEvery="0"
+            axbDir="/home/yogyaahuja/sofa/pinn_project/data/ax_b"/>
+
+        <!-- FIX 1: Visu node — OglModel needs its own name, and src= points to the
+             OBJ loader in this node, not the .msh loader from the parent -->
+        <Node name="Visu">
+            <MeshOBJLoader name="objLoader" filename="mesh/liver-smooth.obj"/>
+            <OglModel name="VisualModel" src="@objLoader"/>
+            <BarycentricMapping input="@../liverDofs" output="@VisualModel"/>
+        </Node>
+
+        <!-- Surf node: triangle-based collision on the liver surface -->
+        <Node name="Surf">
+            <MeshOBJLoader name="surfLoader" filename="mesh/liver-smooth.obj"/>
+            <MechanicalObject name="surfDofs" src="@surfLoader"/>
+            <TriangleSetTopologyContainer src="@surfLoader" name="surfTopo"/>
+            <TriangleSetTopologyModifier/>
+            <TriangleSetGeometryAlgorithms template="Vec3d"/>
+            <TriangleCollisionModel/>
+            <LineCollisionModel/>
+            <PointCollisionModel/>
+            <BarycentricMapping input="@../liverDofs" output="@surfDofs"/>
+        </Node>
+    </Node>
+
+    <!-- ===== OMNI: device target, directly referenced by Instrument's RestShapeSpringsForceField ===== -->
+    <Node name="Omni">
+        <MechanicalObject template="Rigid3d" name="DOFs"
+            position="@GeomagicDevice.positionDevice"/>
+        <MechanicalStateController template="Rigid3d"
+            listening="true" mainDirection="-1.0 0.0 0.0"/>
+    </Node>
+
+    <!-- ===== INSTRUMENT NODE ===== -->
+    <!-- DataCollector looks for root->getChild("Instrument")->getMechanicalState()
+         which finds instrumentState (Rigid3d) here -->
+    <Node name="Instrument">
+        <EulerImplicitSolver rebuildMatrixEvery="10" rayleighStiffness="0.01" rayleighMass="1.0"/>
+        <CGLinearSolver iterations="25" tolerance="1e-10" threshold="10e-10"/>
+        <MechanicalObject name="instrumentState" template="Rigid3d" position="0 6 0  0 0 0 1"/>
+        <UniformMass totalMass="0.5"/>
+        <LCPForceFeedback  name="LCPForceFeedback" template="Rigid3d"  activate="true" forceCoef="0.1" usePINN="true" liveComparisonLog="/home/yogyaahuja/sofa/pinn_project/data/live_pinn_vs_real.csv"/>
+        <UncoupledConstraintCorrection/>
+
+        <Node name="VisualModel">
+            <MeshOBJLoader name="objLoader"
+                filename="Demos/Dentistry/data/mesh/dental_instrument.obj"/>
+            <OglModel name="InstrumentVisual"
+                src="@objLoader"
+                color="1.0 0.2 0.2 1.0"
+                ry="-180" rz="-90" dz="3.5" dx="-0.3"/>
+            <RigidMapping input="@../instrumentState" output="@InstrumentVisual"/>
+        </Node>
+
+        <!-- Instrument collision against the liver — Line+Point on the centerline mesh -->
+        <Node name="CollisionModel">
+            <MeshOBJLoader name="loader"
+                filename="Demos/Dentistry/data/mesh/dental_instrument_centerline.obj"/>
+            <MeshTopology src="@loader"/>
+            <MechanicalObject name="instrumentCollisionState1"
+                ry="-180" rz="-90" dz="3.5" dx="-0.3"/>
+            <!-- Remove contactStiffness — not used with FrictionContactConstraint -->
+            <LineCollisionModel/>
+            <PointCollisionModel/>
+            <RigidMapping input="@../instrumentState"
+                output="@instrumentCollisionState1"/>
+        </Node>
+
+        <!-- Virtual coupling: anchor the instrument's single rigid DOF directly to the
+             Omni device target, matching the supervisor's TraingularFEM.scn pattern.
+             Very high stiffness + implicit integration = numerically stable without any
+             force saturation needed (unlike VectorSpringForceField's multi-edge gap,
+             which could grow unbounded under sustained pressing). -->
+        <RestShapeSpringsForceField name="rssf"
+            stiffness="5000"
+            angularStiffness="5000"
+            external_rest_shape="@../Omni/DOFs"
+            points="0"
+            external_points="0"/>
+    </Node>
+
+</Node>

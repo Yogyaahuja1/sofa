@@ -3,3 +3,4 @@ n_lags=  8  sustain_beta=1.00  epochs_run= 1350  best_val_loss=0.081569  force_r
 n_lags=  8  sustain_beta=5.00  epochs_run= 1000  best_val_loss=0.083180  force_rel_l2= 10.90%  force_rel_l2_robust=  7.43%  force_rel_l2_sustained=  7.92%  deform_rel_l2= 28.51%  params=1,284,505
 n_lags=  8  sustain_beta=8.00  epochs_run=  950  best_val_loss=0.084705  force_rel_l2= 11.02%  force_rel_l2_robust=  7.15%  force_rel_l2_sustained=  8.71%  deform_rel_l2= 28.87%  params=1,284,505
 n_lags=  8  sustain_beta=10.00  epochs_run= 1000  best_val_loss=0.085231  force_rel_l2= 11.02%  force_rel_l2_robust=  7.15%  force_rel_l2_sustained=  8.71%  deform_rel_l2= 28.87%  params=1,284,505
+n_lags=  8  sustain_beta=5.00  epochs_run= 2850  best_val_loss=0.076203  force_rel_l2= 10.54%  force_rel_l2_robust=  7.16%  force_rel_l2_sustained=  6.21%  deform_rel_l2= 27.26%  params=1,284,505

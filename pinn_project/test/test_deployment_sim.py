@@ -18,6 +18,8 @@ FEM_SKIP = N means FEM result arrives every N haptic steps.
 
 Run: python3 test_deployment_sim.py
 """
+import os as _os
+SOFA_ROOT = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
 
 import sys, os
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'train'))
@@ -28,9 +30,9 @@ import pandas as pd
 from pinn_model import LiverUNet
 
 # ── CONFIG ────────────────────────────────────────────────────────────────────
-MODEL_PATH    = '/home/yogyaahuja/sofa/pinn_project/train/tissue_pinn_force_final.pth'
-CSV_PATH      = '/home/yogyaahuja/sofa/pinn_project/data/training_data.csv'
-VERTICES_PATH = '/home/yogyaahuja/sofa/pinn_project/data/liver_vertices.npy'
+MODEL_PATH    = f'{SOFA_ROOT}/pinn_project/train/tissue_pinn_force_final.pth'
+CSV_PATH      = f'{SOFA_ROOT}/pinn_project/data/training_data.csv'
+VERTICES_PATH = f'{SOFA_ROOT}/pinn_project/data/liver_vertices.npy'
 N_NEIGHBOURS  = 20
 N_LAGS        = 5
 N_VERTICES    = 181

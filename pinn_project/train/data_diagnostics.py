@@ -6,13 +6,15 @@ pipeline as train_pinn.py (no actual training) and reports:
   - zero-std input columns after normalisation
   - correlation of key feature groups with the prediction target
 """
+import os as _os
+SOFA_ROOT = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
 
 import numpy as np
 import pandas as pd
 import torch
 from scipy.stats import pearsonr
 
-CSV_PATH      = '/home/yogyaahuja/sofa/pinn_project/data/training_data.csv'
+CSV_PATH      = f'{SOFA_ROOT}/pinn_project/data/training_data.csv'
 N_VERTICES    = 181
 FIXED_INDICES = [3, 39, 64]
 TRAIN_SPLIT   = 0.8
@@ -55,7 +57,7 @@ df['tool_fz'] = df['tool_fz'].clip(-100.0, 100.0)
 base_cols = ['tool_x','tool_y','tool_z','tool_vx','tool_vy','tool_vz',
               'tool_fx','tool_fy','tool_fz','sim_time','dt_since_last']
 
-vertex_pos = np.load('/home/yogyaahuja/sofa/pinn_project/data/liver_vertices.npy')
+vertex_pos = np.load(f'{SOFA_ROOT}/pinn_project/data/liver_vertices.npy')
 tool_positions = df[['tool_x','tool_y','tool_z']].values
 
 N_NEIGHBOURS = 20

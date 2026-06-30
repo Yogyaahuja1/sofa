@@ -11,6 +11,8 @@ construction and still genuinely represents "position along the trajectory."
 Usage:
   python3 position_force_plot.py --session-id 35
 """
+import os as _os
+SOFA_ROOT = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
 
 import sys, os, argparse
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'train'))
@@ -23,9 +25,9 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from pinn_model import LiverUNet
 
-MODEL_PATH    = '/home/yogyaahuja/sofa/pinn_project/train/tissue_pinn_force_final.pth'
-CSV_PATH      = '/home/yogyaahuja/sofa/pinn_project/data/training_data.csv'
-VERTICES_PATH = '/home/yogyaahuja/sofa/pinn_project/data/liver_vertices.npy'
+MODEL_PATH    = f'{SOFA_ROOT}/pinn_project/train/tissue_pinn_force_final.pth'
+CSV_PATH      = f'{SOFA_ROOT}/pinn_project/data/training_data.csv'
+VERTICES_PATH = f'{SOFA_ROOT}/pinn_project/data/liver_vertices.npy'
 N_NEIGHBOURS, N_LAGS, N_VERTICES = 20, 5, 181
 FIXED_INDICES = [3, 39, 64]
 SEED = 42
@@ -248,6 +250,6 @@ axes[1].grid(True, alpha=0.3)
 
 plt.tight_layout()
 out_suffix = f'_session{args.session_id}' if args.session_id is not None else '_filtered15'
-out_path = f'/home/yogyaahuja/sofa/pinn_project/test/position_force_comparison{out_suffix}.png'
+out_path = f'{SOFA_ROOT}/pinn_project/test/position_force_comparison{out_suffix}.png'
 plt.savefig(out_path, dpi=150, bbox_inches='tight')
 print(f"\nSaved: {out_path}")

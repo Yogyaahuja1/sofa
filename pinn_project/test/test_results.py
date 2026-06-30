@@ -3,6 +3,8 @@
 Test trained PINN and visualize results.
 Run: python3 test_results.py
 """
+import os as _os
+SOFA_ROOT = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
 
 import numpy as np
 import pandas as pd
@@ -10,15 +12,15 @@ import torch
 import matplotlib.pyplot as plt
 import time
 import sys
-sys.path.append('/home/yogyaahuja/sofa/pinn_project/2_train')
+sys.path.append(f'{SOFA_ROOT}/pinn_project/2_train')
 from pinn_model import LiverPINN
 
 
 # ============================================================
 # LOAD MODEL
 # ============================================================
-MODEL_PATH = "/home/yogyaahuja/sofa/pinn_project/data/tissue_pinn.pth"
-DATA_PATH  = "/home/yogyaahuja/sofa/pinn_project/data/training_data.csv"
+MODEL_PATH = f"{SOFA_ROOT}/pinn_project/data/tissue_pinn.pth"
+DATA_PATH  = f"{SOFA_ROOT}/pinn_project/data/training_data.csv"
 
 print("Loading model and configuration...")
 checkpoint = torch.load(MODEL_PATH, map_location='cpu')
@@ -294,7 +296,7 @@ table.scale(1, 1.5)
 ax.set_title('Summary', pad=20)
 
 plt.tight_layout()
-out_path = "/home/yogyaahuja/sofa/pinn_project/data/test_results.png"
+out_path = f"{SOFA_ROOT}/pinn_project/data/test_results.png"
 plt.savefig(out_path, dpi=150, bbox_inches='tight')
 print(f"Results saved: {out_path}")
 

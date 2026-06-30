@@ -5,6 +5,12 @@ simulation, trained on real recorded touch data and deployed inside SOFA's
 haptic force-feedback loop (`LCPForceFeedback`) via a TorchScript + LibTorch
 C++ predictor.
 
+**Note on paths in this README**: examples below show `/home/yogyaahuja/sofa`
+as the repo location — substitute wherever you actually cloned it. Run
+`pinn_project/setup_paths.sh` first (see "Building" below) and the actual
+source/scene files will match your real path automatically; only this prose
+documentation keeps the original literal paths as illustrative examples.
+
 ## Directory structure
 
 ```
@@ -60,6 +66,33 @@ pinn_project/
 ```
 
 ## Building
+
+### First step on any new clone: fix hardcoded paths
+
+```bash
+bash pinn_project/setup_paths.sh
+```
+
+This project has paths baked into a few places that can't resolve themselves
+dynamically — C++ source has the model file paths compiled in, `CMakeLists.txt`
+needs LibTorch's location at configure time, and SOFA scene (`.scn`) XML has no
+relative/environment-variable path mechanism. This script rewrites all of them
+from this project's original path to wherever you actually cloned the repo, and
+auto-detects LibTorch's actual location on this machine. Safe to re-run any time.
+(Python scripts under `pinn_project/` don't need this — they already compute their
+own paths at runtime relative to their own file location.)
+
+**Always run `runSofa` via the explicit path `/home/yogyaahuja/sofa/build/bin/runSofa`.**
+There is a second `runSofa` binary at `build/install/bin/runSofa` (from an older install
+step) that resolves its core libraries from `build/install/lib/`, a separate, easily
+stale copy — `Sofa.Component.Haptics` there has been seen weeks out of date while
+`build/lib/` was current, silently mixing old core code with freshly-built plugins
+(confirmed cause of a real bug: corrupted timestamps and zero force throughout an
+entire data-collection recording, with no crash or error). Since both binaries sit two
+directories deep under different parents, a relative path like
+`../../pinn_project/collect_data/liver_collection.scn` resolves correctly from *either*
+location, so this is easy to trigger by accident — always use the absolute path above,
+or `cd /home/yogyaahuja/sofa/build/bin` first.
 
 This lives inside the main SOFA monorepo and the C++ predictor (`PINNPredictor.cpp`)
 is compiled directly into `Sofa.Component.Haptics` (see that target's `CMakeLists.txt`

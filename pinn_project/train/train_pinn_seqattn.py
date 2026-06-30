@@ -25,6 +25,8 @@ Loss: W_DEFORM * MSE(deform) + W_FORCE * MSE(force), separate per-column
 z-score normalisation; deform teaches the bulk of the physics, force is the
 reported headline metric.
 """
+import os as _os
+SOFA_ROOT = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
 
 import torch
 import torch.nn as nn
@@ -37,7 +39,7 @@ from pinn_model import LagSequenceAttention
 # ============================================================
 # CONFIGURATION
 # ============================================================
-CSV_PATH      = '/home/yogyaahuja/sofa/pinn_project/data/training_data.csv'
+CSV_PATH      = f'{SOFA_ROOT}/pinn_project/data/training_data.csv'
 N_VERTICES    = 181
 FIXED_INDICES = [3, 39, 64]             # from FixedConstraint in scene
 BATCH_SIZE    = 64
@@ -109,7 +111,7 @@ print(f"Most active vertex: {best_vertex_id}")
 # ============================================================
 # STEP 2: NEIGHBOURHOOD + LAG FEATURES (unchanged from existing pipeline)
 # ============================================================
-vertex_pos = np.load('/home/yogyaahuja/sofa/pinn_project/data/liver_vertices.npy')
+vertex_pos = np.load(f'{SOFA_ROOT}/pinn_project/data/liver_vertices.npy')
 tool_positions = df[['tool_x', 'tool_y', 'tool_z']].values
 
 print("Computing neighbourhood indices...")

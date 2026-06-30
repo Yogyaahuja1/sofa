@@ -15,8 +15,20 @@ set(CMAKE_PREFIX_PATH
 find_package(Sofa.Core REQUIRED)
 find_package(Sofa.Simulation.Core REQUIRED)
 find_package(Sofa.Component.StateContainer REQUIRED)
-find_package(Sofa.Component.Haptics REQUIRED)
 find_package(Sofa.Component.SolidMechanics.FEM.Elastic REQUIRED)
+find_package(Sofa.Component.Haptics REQUIRED)
+
+# LCPForceFeedback.h pulls in PINNPredictor.h, which needs torch/script.h directly —
+# the main Sofa.Component.Haptics build only exposes its own Torch includes as
+# PRIVATE, so they don't propagate here even though we link against that target.
+# Without this, the build silently never recompiled against header changes (the
+# error only surfaced on a forced rebuild) instead of failing loudly every time.
+list(APPEND CMAKE_PREFIX_PATH "/home/yogyaahuja/.local/lib/python3.12/site-packages/torch/share/cmake")
+# Same fix as the main build's CMakeLists.txt: LibTorch's CUDA-enabled build
+# triggers CMake's CUDA language detection even though this project only ever
+# runs on CPU — without a fixed architecture, configuration fails outright.
+set(CMAKE_CUDA_ARCHITECTURES "86" CACHE STRING "" FORCE)
+find_package(Torch REQUIRED)
 
 add_library(${PROJECT_NAME} SHARED
     DataCollector.cpp
@@ -30,8 +42,10 @@ target_link_libraries(${PROJECT_NAME}
     Sofa.Component.StateContainer
     Sofa.Component.Haptics
     Sofa.Component.SolidMechanics.FEM.Elastic
+    ${TORCH_LIBRARIES}
 )
 
 target_include_directories(${PROJECT_NAME} PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}
 )
+target_include_directories(${PROJECT_NAME} PRIVATE ${TORCH_INCLUDE_DIRS})

@@ -13,14 +13,16 @@ with a replay and must not be used here).
 Run after both SOFA replays complete:
   python3 compare_replay.py
 """
+import os as _os
+SOFA_ROOT = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
 
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 
-FEM_CSV  = '/home/yogyaahuja/sofa/pinn_project/data/replay_groundtruth.csv'
-PINN_CSV = '/home/yogyaahuja/sofa/pinn_project/data/replay_pinn.csv'
-OUT_PNG  = '/home/yogyaahuja/sofa/pinn_project/data/replay_comparison.png'
+FEM_CSV  = f'{SOFA_ROOT}/pinn_project/data/replay_groundtruth.csv'
+PINN_CSV = f'{SOFA_ROOT}/pinn_project/data/replay_pinn.csv'
+OUT_PNG  = f'{SOFA_ROOT}/pinn_project/data/replay_comparison.png'
 
 # ── Load FEM ground truth (replay log: tool_x,tool_y,tool_z,fx,fy,fz) ────────
 fem = pd.read_csv(FEM_CSV)

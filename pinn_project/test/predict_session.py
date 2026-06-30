@@ -9,6 +9,8 @@ Usage:
 Output:
   force_comparison.png — 4-panel plot: fx / fy / fz / |F| vs time
 """
+import os as _os
+SOFA_ROOT = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
 
 import sys, os, argparse
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'train'))
@@ -21,9 +23,9 @@ import matplotlib.gridspec as gridspec
 from pinn_model import LagSequenceAttentionAccelVar
 
 # ── CONFIG ────────────────────────────────────────────────────────────────────
-MODEL_PATH    = '/home/yogyaahuja/sofa/pinn_project/train/tissue_pinn_contactweight_n8_beta5.0.pth'
-CSV_PATH      = '/home/yogyaahuja/sofa/pinn_project/data/training_data.csv'
-VERTICES_PATH = '/home/yogyaahuja/sofa/pinn_project/data/liver_vertices.npy'
+MODEL_PATH    = f'{SOFA_ROOT}/pinn_project/train/tissue_pinn_contactweight_n8_beta5.0.pth'
+CSV_PATH      = f'{SOFA_ROOT}/pinn_project/data/training_data.csv'
+VERTICES_PATH = f'{SOFA_ROOT}/pinn_project/data/liver_vertices.npy'
 N_NEIGHBOURS  = 20
 N_LAGS        = 8
 N_VERTICES    = 181
@@ -36,6 +38,8 @@ parser.add_argument('csv', nargs='?', default=None, help='CSV file path')
 parser.add_argument('--session-id', type=int, default=None)
 parser.add_argument('--fem-skip',   type=int, default=1,
                     help='Simulate FEM latency: use PINN deform every N steps (1=ideal)')
+parser.add_argument('--dump-row',   type=int, default=-1,
+                    help='Dump the raw+normalized feature vector for this row to /tmp/py_feature_dump.csv, for direct comparison against the C++ feature dump')
 args = parser.parse_args()
 
 # ── LOAD MODEL ────────────────────────────────────────────────────────────────
@@ -63,10 +67,22 @@ df = pd.read_csv(csv_path).replace([np.inf, -np.inf], np.nan).dropna().reset_ind
 
 # Filter to requested session
 if args.session_id is not None:
-    df = df[df['session_id'] == args.session_id].reset_index(drop=True)
+    df = df[df['session_id'] == args.session_id].sort_values('step').reset_index(drop=True)
     if len(df) == 0:
         print(f"ERROR: session_id {args.session_id} not found.")
         sys.exit(1)
+    # session_id resets each collection-run launch, so the same small ID can collide
+    # across separate runs once their data is combined — keep only the largest
+    # contiguous (by step) block, the real episode, not a splice of unrelated ones.
+    step_gaps = df['step'].diff().abs()
+    gap_idx = list(step_gaps[step_gaps > 50].index)
+    if len(gap_idx) > 0:
+        bounds = [0] + gap_idx + [len(df)]
+        blocks = [(bounds[i], bounds[i+1]) for i in range(len(bounds)-1)]
+        best = max(blocks, key=lambda b: b[1]-b[0])
+        print(f"  WARNING: session_id={args.session_id} collides across collection runs "
+              f"(fragment sizes: {[e-s for s,e in blocks]}) — keeping largest block.")
+        df = df.iloc[best[0]:best[1]].reset_index(drop=True)
     print(f"  Using session {args.session_id}: {len(df)} rows")
 elif 'session_id' in df.columns:
     # Use last session with enough data
@@ -216,6 +232,13 @@ for row in range(N_rows):
     Y_pred = Y_norm * Y_std + Y_mean
     fp_log = Y_pred[:n_force]
     pinn_force[row] = np.sign(fp_log) * np.expm1(np.abs(fp_log))
+
+    if row == args.dump_row:
+        with open('/tmp/py_feature_dump.csv', 'w') as f:
+            for i in range(len(X)):
+                f.write(f'{i},{X[i]:.10f},{X_mean[i]:.10f},{X_std[i]:.10f},{X_norm[i]:.10f}\n')
+        print(f"[PY-DEBUG] Dumped row {row} feature vector to /tmp/py_feature_dump.csv")
+        print(f"[PY-DEBUG] row {row} predicted force: {pinn_force[row]}  true force: ({tool_fx[row]:.4f},{tool_fy[row]:.4f},{tool_fz[row]:.4f})")
 
     fem_avail = (row % args.fem_skip == 0)
     if fem_avail:

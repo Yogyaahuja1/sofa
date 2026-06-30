@@ -67,6 +67,11 @@ public:
 
     Data< double > forceCoef; ///< multiply haptic force by this coef.
     Data< bool >   d_usePINN; ///< Set false in data-collection scenes to skip PINN forward pass (saves 3-5ms/step)
+    // Path to a CSV logging PINN's prediction alongside the real force computed at
+    // the exact same live instant (m_realForceCache, via computeRealForceForPINNFeedback)
+    // — for live device validation with zero replay/reconstruction involved, since
+    // both values come from genuine continuous real-time data. Empty = no logging.
+    Data< std::string > d_liveComparisonLog;
 
     Data< double > solverTimeout; ///< max time to spend solving constraints.
 

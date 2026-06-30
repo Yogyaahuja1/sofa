@@ -7,6 +7,8 @@ Usage:
   python3 deployment_distance_plot.py
   python3 deployment_distance_plot.py --zoom-frac 0.3   # zoom window as fraction of total distance
 """
+import os as _os
+SOFA_ROOT = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
 
 import argparse
 import numpy as np
@@ -15,10 +17,10 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
-GT_CSV   = '/home/yogyaahuja/sofa/pinn_project/data/replay_groundtruth.csv'
-PINN_CSV = '/home/yogyaahuja/sofa/pinn_project/data/replay_pinn.csv'
-OUT_FULL = '/home/yogyaahuja/sofa/pinn_project/test/deployment_distance_full.png'
-OUT_ZOOM = '/home/yogyaahuja/sofa/pinn_project/test/deployment_distance_zoom.png'
+GT_CSV   = f'{SOFA_ROOT}/pinn_project/data/replay_groundtruth.csv'
+PINN_CSV = f'{SOFA_ROOT}/pinn_project/data/replay_pinn.csv'
+OUT_FULL = f'{SOFA_ROOT}/pinn_project/test/deployment_distance_full.png'
+OUT_ZOOM = f'{SOFA_ROOT}/pinn_project/test/deployment_distance_zoom.png'
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--zoom-frac', type=float, default=0.35,
