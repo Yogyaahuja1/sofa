@@ -1,2 +1,0 @@
-n_lags=  8  sustain_beta=5.00  onset_beta=0.00  epochs_run=  900  best_val_loss=0.093247  force_rel_l2= 13.75%  force_rel_l2_robust=  8.06%  force_rel_l2_sustained= 13.22%  force_rel_l2_onset= 34.74%  deform_rel_l2= 28.43%  params=1,284,505
-n_lags=  8  sustain_beta=5.00  onset_beta=2.00  epochs_run=  900  best_val_loss=0.093271  force_rel_l2= 14.03%  force_rel_l2_robust=  7.85%  force_rel_l2_sustained= 13.49%  force_rel_l2_onset= 36.53%  deform_rel_l2= 28.46%  params=1,284,505

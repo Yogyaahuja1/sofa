@@ -3,62 +3,27 @@
 ## Models in `train/`
 | File | What it is |
 |------|-----------|
-| `liver_E1500_best.pth` | Best liver model, fixed E=1500 Pa |
-| `liver_Egen_v4.pth` | Liver model, generalises across E=500–5000 Pa |
-| `membrane_v3.pth` | Best membrane model |
+| `liver_E1500_best.pth` | Liver model, fixed E=1500 Pa |
+| `liver_Egen_v5.pth` | Liver model, generalises across E=500–5000 Pa |
+| `liver_E1500_vw1p0s_v1.pth` | Liver model, variable-length 1-second history window |
+| `membrane_v3.pth` | Membrane (flat surface) model |
 
 ---
 
-## 1. Liver E=1500 Model
+## Deployment Tests (used by all liver workflows)
 
-### Train
-```bash
-cd pinn_project/train
-python3 train_liver_pinn.py
+After exporting any liver model to C++, run these 3 tests to evaluate it.
+The targets below were measured for E=1500 — other models will have different numbers.
+
+### Test 1 — Replay: FEM ground truth vs PINN (E=1500 target: ~4.6%)
+
+Runs the same fixed trajectory twice — once with FEM, once with PINN — and compares forces.
+
+**Step 1** — Run FEM ground truth scene (only needed once, result already saved):
 ```
-Auto-saves as `liver_E1500_v1.pth`, `liver_E1500_v2.pth`, ... (increments automatically).
-
-### Export to C++ (after training a new model)
-```bash
-cd pinn_project/test
-python3 export_for_cpp.py --model ../train/liver_E1500_best.pth
-```
-Updates `cpp/pinn_model_traced.pt` and `cpp/normalization_stats.csv`.
-
----
-
-## 2. Deployment Tests
-
-### Setup — collect a fresh test path
-1. Run `collect_data/liver_collection.scn` in SOFA with haptic device
-2. Probe the liver for a few seconds, then close
-3. Appends rows to `data/training_data.csv`
-4. Extract that session's rows to test_path.csv (replace `<id>` with last session_id):
-```bash
-python3 -c "
-import pandas as pd
-df = pd.read_csv('data/training_data.csv')
-sid = df['session_id'].max()
-df[df['session_id']==sid].to_csv('data/test_path.csv', index=False)
-print(f'test_path.csv: {(df.session_id==sid).sum()} rows  session_id={sid}')
-"
-```
-
----
-
-### Test 1 — Replay: FEM ground truth vs PINN (target: ~4.6%)
-
-Runs the same fixed trajectory twice — once with FEM, once with PINN — and compares.
-
-**Step 1** — Run FEM ground truth scene:
-```
-SOFA → open  pinn_project/test/liver_replay_groundtruth.scn
+SOFA → open  pinn_project/collect_data/liver_auto_collect.scn
 ```
 Outputs: `data/replay_groundtruth.csv`
-
-> **Note:** `liver_replay_groundtruth.scn` was deleted during cleanup. If you need
-> to re-run this, restore it from git or re-create it with `usePINN=false`.
-> Yesterday's result already exists in `data/replay_groundtruth.csv`.
 
 **Step 2** — Run PINN replay scene:
 ```
@@ -70,37 +35,27 @@ Outputs: `data/replay_pinn.csv` and `/tmp/cpp_position_seq.csv`
 ```bash
 python3 pinn_project/test/compare_replay.py
 ```
-Saves `data/replay_comparison.png`
+Saves: `data/replay_comparison.png`
 
 ---
 
-### Test 2 — Corrected replay: predicted vs interpolated true force (target: ~7%)
+### Test 2 — Corrected replay: corrected input vs true force (E=1500 target: ~7%)
 
-Uses the actual positions the PINN replay visited and interpolates the true
-force from a reference real recording. Requires Test 1 Step 2 to have run
-first (needs `/tmp/cpp_position_seq.csv`).
+Reconstructs model inputs from a real recording at the replay's actual positions.
+Requires Test 1 Step 2 to have run first (needs `/tmp/cpp_position_seq.csv`).
 
-**Step 1** — Run the PINN replay scene (same as Test 1 Step 2 above):
-```
-SOFA → open  pinn_project/test/liver_replay_pinn.scn
-```
-This also writes `/tmp/cpp_position_seq.csv` — the actual position at every predict call.
-
-**Step 2** — Pick a reference session from training_data.csv (use a session
-with good contact coverage). Then run:
 ```bash
-python3 pinn_project/test/predict_corrected_replay.py --session-id <id>
+python3 pinn_project/test/predict_corrected_replay.py --session-id 25
 ```
-Example: `--session-id 25`
+Saves: `pinn_project/test/corrected_replay_session25.png`
 
-Saves `pinn_project/test/corrected_replay_session<id>.png`
+Use any session-id with good contact coverage from `data/training_data.csv`.
 
 ---
 
-### Test 3 — Live device: real-time PINN vs real LCP force (target: ~15.7%)
+### Test 3 — Live device: real-time PINN vs real LCP force (E=1500 target: ~15.7%)
 
-Runs the liver simulation live with the haptic device. PINN predicts force
-in real-time; LCPForceFeedback logs both PINN and real force.
+Runs the liver simulation live with the haptic device. PINN predicts force in real-time.
 
 **Step 1** — Run live scene:
 ```
@@ -113,44 +68,139 @@ Outputs: `data/live_pinn_vs_real.csv`
 ```bash
 python3 pinn_project/test/compare_live.py
 ```
-Saves `pinn_project/test/live_comparison.png`
+Saves: `pinn_project/test/live_comparison.png`
 
 ---
 
-## 3. E-Generalised Liver Model (E=500–5000 Pa)
+## Workflow 1 — Liver E=1500 (fixed stiffness)
 
-### Train
+### Step 1 — Collect training data
+1. Connect haptic device
+2. Open scene in SOFA:
+```
+SOFA → open  pinn_project/collect_data/liver_collection.scn
+```
+3. Probe the liver for a few minutes, then close
+4. Data appends to `data/training_data.csv`
+
+### Step 2 — Train
+```bash
+cd pinn_project/train
+python3 train_liver_pinn.py
+```
+Auto-saves as `liver_E1500_v1.pth`, `liver_E1500_v2.pth`, ... (increments automatically).
+Training data: `data/training_data.csv` (auto-detected, no flag needed).
+
+### Step 3 — Export to C++
+```bash
+python3 pinn_project/test/export_for_cpp.py --model pinn_project/train/liver_E1500_v1.pth
+```
+Updates `cpp/pinn_model_traced.pt` and `cpp/normalization_stats.csv`.
+
+### Step 4 — Run deployment tests
+See **Deployment Tests** section above. Run all 3 tests.
+
+---
+
+## Workflow 2 — Liver E-Generalised (E=500–5000 Pa)
+
+Trains on data collected across 7 stiffness values. The model takes log(E/1000) as
+an extra input so it learns to scale forces with stiffness.
+
+### Step 1 — Training data
+Pre-built CSV already exists: `data/training_data_E_gen_30k_per_E_v2.csv`
+(30k rows per E value × 7 values = 210k rows, balanced across sessions).
+
+To re-collect: run `liver_collection.scn` at each E value and merge CSVs.
+
+### Step 2 — Train
 ```bash
 cd pinn_project/train
 python3 train_liver_pinn.py --use-youngs
 ```
-Auto-saves as `liver_Egen_v1.pth`, `liver_Egen_v2.pth`, ... (increments automatically).
-The `--use-youngs` flag adds log(E/1000) as a global feature so the model
-learns to scale forces with stiffness.
+Auto-saves as `liver_Egen_v1.pth`, `liver_Egen_v2.pth`, ...
+The `--use-youngs` flag selects the E-gen CSV and adds log(E/1000) as a feature.
 
-### Export
+### Step 3 — Export to C++
 ```bash
-python3 pinn_project/test/export_for_cpp.py --model pinn_project/train/liver_Egen_v4.pth
+python3 pinn_project/test/export_for_cpp.py --model pinn_project/train/liver_Egen_v5.pth
 ```
+
+### Step 4 — Run deployment tests
+See **Deployment Tests** section above. Run all 3 tests.
 
 ---
 
-## 4. Membrane Model
+## Workflow 3 — Membrane (flat surface)
 
-### Train
+### Step 1 — Collect training data
+```
+SOFA → open  pinn_project/collect_data/membrane_sirmesh_collect.scn
+```
+Probe the membrane surface, then close. Appends to `data/flat_surface_training_data.csv`.
+
+### Step 2 — Train
 ```bash
 cd pinn_project/train
 python3 train_membrane_pinn.py
 ```
-Auto-saves as `membrane_v1.pth`, `membrane_v2.pth`, ... (increments automatically).
+Auto-saves as `membrane_v1.pth`, `membrane_v2.pth`, ...
 
-### Collect membrane data
-```
-SOFA → open  pinn_project/collect_data/membrane_sirmesh_collect.scn
-```
-Probe the membrane, close when done. Appends to `data/flat_surface_training_data.csv`.
-
-### Live membrane test
+### Step 3 — Live test
 ```
 SOFA → open  pinn_project/collect_data/membrane_sirmesh_live.scn
 ```
+No export step needed — membrane uses a separate C++ predictor.
+
+---
+
+## Workflow 4 — Liver Variable-Window (1-second history)
+
+Uses ALL FEM rows from the past 1 second as history (variable count, up to 200 rows).
+The model attends over the full second of history and ignores padded positions via masking.
+
+### Step 1 — Training data
+Uses same data as Workflow 1: `data/training_data.csv`.
+No additional collection needed.
+
+### Step 2 — Train
+```bash
+cd pinn_project/train
+python3 train_liver_pinn.py --var-window 1.0
+```
+Auto-saves as `liver_E1500_vw1p0s_v1.pth`, `liver_E1500_vw1p0s_v2.pth`, ...
+
+To train on E-gen data with variable window:
+```bash
+python3 train_liver_pinn.py --var-window 1.0 --use-youngs
+```
+Auto-saves as `liver_Egen_vw1p0s_v1.pth`, ...
+
+To test on a subset first (faster):
+```bash
+python3 train_liver_pinn.py --var-window 1.0 --max-rows 80000
+```
+
+> **Note:** Feature building takes ~30–60 mins (scans all history rows per training row).
+> Training itself is fast — model forward pass is fully vectorised.
+
+### Step 3 — Export to C++
+```bash
+python3 pinn_project/test/export_for_cpp.py --model pinn_project/train/liver_E1500_vw1p0s_v1.pth
+```
+
+### Step 4 — Run deployment tests
+See **Deployment Tests** section above. Run all 3 tests.
+Compare results against Workflow 1 targets to see if 1-second history helps.
+
+---
+
+## Queue multiple training runs
+
+To run training jobs back-to-back automatically and push results when done:
+```bash
+nohup bash pinn_project/train/run_queue.sh &
+tail -f pinn_project/train/queue.log   # monitor progress
+```
+
+Edit `run_queue.sh` to change which jobs run and in what order.
