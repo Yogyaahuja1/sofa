@@ -38,11 +38,15 @@ fy_pinn = pinn['fy'].values
 fz_pinn = pinn['fz'].values
 f_pinn  = np.sqrt(fx_pinn**2 + fy_pinn**2 + fz_pinn**2)
 
-# Match lengths (replay may finish early or late)
+# Match lengths and drop NaN rows
 n = min(len(fx_fem), len(fx_pinn))
 fx_fem, fy_fem, fz_fem, f_fem   = fx_fem[:n], fy_fem[:n], fz_fem[:n], f_fem[:n]
 fx_pinn, fy_pinn, fz_pinn, f_pinn = fx_pinn[:n], fy_pinn[:n], fz_pinn[:n], f_pinn[:n]
-steps = np.arange(n)
+valid = ~(np.isnan(fx_fem) | np.isnan(fy_fem) | np.isnan(fz_fem) |
+          np.isnan(fx_pinn) | np.isnan(fy_pinn) | np.isnan(fz_pinn))
+fx_fem, fy_fem, fz_fem, f_fem   = fx_fem[valid], fy_fem[valid], fz_fem[valid], f_fem[valid]
+fx_pinn, fy_pinn, fz_pinn, f_pinn = fx_pinn[valid], fy_pinn[valid], fz_pinn[valid], f_pinn[valid]
+steps = np.arange(valid.sum())
 
 # ── Metrics ───────────────────────────────────────────────────────────────────
 def rel_l2(gt, pred):

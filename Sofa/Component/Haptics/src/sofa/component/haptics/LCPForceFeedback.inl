@@ -550,9 +550,34 @@ void LCPForceFeedback<DataTypes>::handleEvent(sofa::core::objectmodel::Event *ev
         // anything the model saw in training. Gate everything here, once, so ddx/
         // sax/strain/updateFEM/predictForce all advance at the exact training rate.
         ++m_pinnStepCounter;
-        const bool pinn_due = (m_pinnStepCounter % PINN_CALL_STEP_STRIDE) == 0;
-        if (!pinn_due)
-            return;
+        // Contact-onset fast-path: if the tool just entered contact (real force went from
+        // zero to nonzero), force a PINN call immediately rather than waiting up to 2 more
+        // steps. Without this, the device gives ~0 resistance for up to 15ms at every
+        // contact onset, the tool plunges in freely, and FEM logs a phantom 14-17N spike.
+        // At the moment of first touch, deformation is near-zero regardless of delta window,
+        // so the 1-step deform-delta here is equivalent to the normal 3-step delta.
+        {
+            bool in_contact = (m_realForceCache.norm() > 0.05);
+            bool contact_onset = in_contact && !m_prevInContact;
+            // Debounce contact loss: LCP force briefly dips below threshold mid-contact
+            // (~23/36 gaps were <3 PINN calls). Require 2 consecutive no-contact calls
+            // before zeroing the cache — eliminates false loss→onset cache-jump jerks.
+            if (in_contact) {
+                m_noContactCount = 0;
+            } else {
+                ++m_noContactCount;
+            }
+            bool contact_loss = !in_contact && m_prevInContact && (m_noContactCount >= 4);
+            m_prevInContact = in_contact;
+            if (contact_onset)
+                m_pinnStepCounter = 0; // restart stride so next regular call is in 3 steps
+            if (contact_loss) {
+                std::lock_guard<std::mutex> lk(m_pinnCacheMutex);
+                m_pinnCachedForce = {0.0, 0.0, 0.0};
+            }
+            if (!contact_onset && (m_pinnStepCounter % PINN_CALL_STEP_STRIDE) != 0)
+                return;
+        }
 
         // Delta deformation: (curPos-restPos) - prevDeform
         // MAX_DEFORM_MM: maximum plausible liver deformation (~30mm). Anything beyond
@@ -762,7 +787,14 @@ void LCPForceFeedback<DataTypes>::handleEvent(sofa::core::objectmodel::Event *ev
                                       << (f_nan ? "  << NAN — check ty_norm above" : "") << std::endl;
 
                         std::lock_guard<std::mutex> lk(m_pinnCacheMutex);
-                        m_pinnCachedForce = sofa::type::Vec3d(f[0], f[1], f[2]);
+                        // EMA smoothing — blends new prediction with previous cached value
+                        // to eliminate the staircase/jerk from stride-3 updates.
+                        // Scale factor: 1.0 = no scaling (model predicts correctly at ~7% error).
+                        constexpr double scale = 1.0;
+                        constexpr double alpha = 0.20;
+                        m_pinnCachedForce[0] = alpha * (scale * f[0]) + (1.0 - alpha) * m_pinnCachedForce[0];
+                        m_pinnCachedForce[1] = alpha * (scale * f[1]) + (1.0 - alpha) * m_pinnCachedForce[1];
+                        m_pinnCachedForce[2] = alpha * (scale * f[2]) + (1.0 - alpha) * m_pinnCachedForce[2];
 
                         // ── Live comparison log: PINN's prediction vs the real force at
                         // this exact instant, both from genuine continuous real-time data

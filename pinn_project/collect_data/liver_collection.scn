@@ -55,7 +55,7 @@
 
         <!-- GlobalSystemMatrixExporter disabled — synchronous 543×543 CSV write was costing fps
         <GlobalSystemMatrixExporter name="matrix_exporter"
-            filename="/home/yogyaahuja/sofa/pinn_project/data/ax_b/A"
+            filename="pinn_project/data/ax_b/A"
             format="csv"
             exportEveryNumberOfSteps="30"/>
         -->
@@ -75,10 +75,10 @@
         <!-- Data collector — sits inside Liver node so it finds liverDofs automatically -->
         <!-- Tool node is named "Instrument" with MechanicalObject "instrumentState" (Rigid3d) -->
         <DataCollector
-            outputFile="/home/yogyaahuja/sofa/pinn_project/data/training_data.csv"
-            collectEvery="3"
+            outputFile="pinn_project/data/training_data.csv"
+            collectEvery="1"
             dumpAxbEvery="0"
-            axbDir="/home/yogyaahuja/sofa/pinn_project/data/ax_b"/>
+            axbDir="pinn_project/data/ax_b"/>
 
         <!-- FIX 1: Visu node — OglModel needs its own name, and src= points to the
              OBJ loader in this node, not the .msh loader from the parent -->

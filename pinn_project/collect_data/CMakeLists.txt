@@ -33,6 +33,8 @@ find_package(Torch REQUIRED)
 add_library(${PROJECT_NAME} SHARED
     DataCollector.cpp
     DataCollector.h
+    MembraneDataCollector.cpp
+    MembraneDataCollector.h
     init.cpp
 )
 

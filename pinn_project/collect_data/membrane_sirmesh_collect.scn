@@ -1,0 +1,154 @@
+<?xml version="1.0" ?>
+<!-- Data collection scene for sir's membrane (membrane2.obj).
+     Based on test2_CUDA_optimized_9_fixed28.scn with:
+       - TearingEngine DISABLED (sir: "disable tearing engine")
+       - CUDA removed (CPU batch collection, no GPU required)
+       - TriangularFEMForceFieldOptim → TriangularFEMForceField (for MembraneDataCollector)
+       - GeomagicDriver in replay mode (no live device needed)
+       - MembraneDataCollector added to Tissue node
+     Run via: run_membrane_sirmesh_collect.sh -->
+<Node name="root" dt="0.001" gravity="0 0 0">
+
+    <RequiredPlugin name="PINNDataCollector"/>
+    <RequiredPlugin name="Geomagic"/>
+    <RequiredPlugin name="Sofa.Component.AnimationLoop"/>
+    <RequiredPlugin name="Sofa.Component.Collision.Detection.Algorithm"/>
+    <RequiredPlugin name="Sofa.Component.Collision.Detection.Intersection"/>
+    <RequiredPlugin name="Sofa.Component.Collision.Geometry"/>
+    <RequiredPlugin name="Sofa.Component.Collision.Response.Contact"/>
+    <RequiredPlugin name="Sofa.Component.Constraint.Lagrangian.Correction"/>
+    <RequiredPlugin name="Sofa.Component.Constraint.Lagrangian.Solver"/>
+    <RequiredPlugin name="Sofa.Component.Constraint.Projective"/>
+    <RequiredPlugin name="Sofa.Component.Controller"/>
+    <RequiredPlugin name="Sofa.Component.Haptics"/>
+    <RequiredPlugin name="Sofa.Component.IO.Mesh"/>
+    <RequiredPlugin name="Sofa.Component.LinearSolver.Iterative"/>
+    <RequiredPlugin name="Sofa.Component.Mapping.Linear"/>
+    <RequiredPlugin name="Sofa.Component.Mapping.NonLinear"/>
+    <RequiredPlugin name="Sofa.Component.Mass"/>
+    <RequiredPlugin name="Sofa.Component.ODESolver.Backward"/>
+    <RequiredPlugin name="Sofa.Component.SolidMechanics.FEM.Elastic"/>
+    <RequiredPlugin name="Sofa.Component.SolidMechanics.Spring"/>
+    <RequiredPlugin name="Sofa.Component.StateContainer"/>
+    <RequiredPlugin name="Sofa.Component.Topology.Container.Dynamic"/>
+    <RequiredPlugin name="Sofa.Component.Visual"/>
+    <RequiredPlugin name="Sofa.GL.Component.Rendering3D"/>
+
+    <VisualStyle displayFlags="hideBehaviorModels hideCollisionModels hideMappings hideForceFields"/>
+    <DefaultVisualManagerLoop/>
+
+    <CollisionPipeline name="pipeline" depth="6" verbose="0"/>
+    <LCPConstraintSolver tolerance="1e-4" maxIt="100"/>
+    <BruteForceBroadPhase/>
+    <BVHNarrowPhase/>
+    <LocalMinDistance name="Proximity" alarmDistance="0.05" contactDistance="0.01" angleCone="0.0"/>
+    <DefaultContactManager name="Response" response="FrictionContactConstraint"/>
+    <FreeMotionAnimationLoop computeBoundingBox="false"/>
+
+    <!-- Replay mode: reads positions from CSV, no live Geomagic device needed -->
+    <GeomagicDriver name="GeomagicDevice"
+                    deviceName="Default Device"
+                    scale="1"
+                    positionBase="0 0 0"
+                    orientationBase="0 0.707 0 -0.707"
+                    maxLinearSpeed="500"
+                    replayFile="pinn_project/data/membrane_sirmesh_auto_traj.csv"
+                    replayOutput="/tmp/membrane_sirmesh_replay_out.csv"/>
+
+    <!-- Tissue node: identical to sir's scene EXCEPT no TearingEngine and using
+         TriangularFEMForceField (not Optim) so MembraneDataCollector can read
+         triangleInfo.getValue()[t].stress/strain. Same material params. -->
+    <Node name="Tissue">
+
+        <MeshOBJLoader name="meshLoader"
+                       filename="pinn_project/membrane/membrane2.obj"
+                       scale="5" createSubelements="true"/>
+        <TriangleSetTopologyContainer name="Triangle_topo" src="@meshLoader"/>
+        <TriangleSetTopologyModifier name="Modifier"/>
+        <TriangleSetGeometryAlgorithms name="GeomAlgo" template="Vec3d"/>
+
+        <EulerImplicitSolver name="cg_odesolver" rayleighStiffness="0.1" rayleighMass="0.1"/>
+        <CGLinearSolver name="linear_solver" iterations="25" tolerance="1.0e-6" threshold="1.0e-20"/>
+
+        <!-- Exact same transform as sir's scene so positions match deployment -->
+        <MechanicalObject name="tissue_dofs" template="Vec3d"
+                          src="@meshLoader" scale3d="1 1 1"
+                          rotation="180 0 -180" translation="105 50 -13"/>
+
+        <UniformMass name="mass" totalMass="10.0"/>
+
+        <!-- Exact same boundary indices as sir's scene -->
+        <FixedConstraint mstate="@tissue_dofs"
+                         indices="512 513 2 514 3 1 0 4 518 9 521 520 12 13 10 15 11 17 18 14 21 25 5 28 29 30 31 32 33 34 546 38 1025 551 39 554 517 46 559 1027 560 561 563 564 565 55 56 57 58 59 569 1029 62 576 598 602 604 605 95 611 102 615 108 110 111 112 631 632 124 638 639 128 129 131 132 645 647 654 655 656 657 667 668 669 670 159 160 161 162 163 672 165 166 167 168 169 170 171 172 173 686 176 177 178 184 185 186 187 188 189 190 702 192 705 191 193 704 209 210 213 214 215 216 729 232 753 754 755 756 761 249 763 764 766 255 256 259 778 779 267 781 780 271 272 785 786 787 788 274 790 275 792 789 284 797 798 801 290 291 292 294 301 813 305 306 307 820 308 309 821 826 854 862 866 867 871 367 894 895 896 907 908 910 922 930 935 440 441 952 445 446 447 959 449 450 452 453 967 456 968 973 462 974 463 466 983 479 482 483 996 486 487 1000 1002 493 494 1006 496 497 1005 1007 1013 502 506 509 510 511"/>
+
+        <!-- TriangularFEMForceField (not Optim) — MembraneDataCollector reads
+             triangleInfo.getValue()[t].stress and .strain from this component.
+             Same material params as sir's scene. -->
+        <TriangularFEMForceField name="FEM" template="Vec3d"
+                                 youngModulus="600" poissonRatio="0.3" method="large"/>
+
+        <UncoupledConstraintCorrection compliance="0.01"/>
+
+        <!-- TearingEngine DISABLED per sir's instruction: "disable tearing engine" -->
+
+        <!-- Collision from both sides (tool can approach from any direction) -->
+        <TriangleCollisionModel name="tcm" template="Vec3d" group="1" bothSide="true"/>
+
+        <!-- MembraneDataCollector: collects deform+stress+strain per vertex each step -->
+        <MembraneDataCollector
+            outputFile="pinn_project/data/membrane_sirmesh_training_data.csv"
+            collectEvery="9"/>
+
+    </Node>
+
+    <Node name="Omni">
+        <MechanicalObject template="Rigid3d" name="DOFs"
+                          position="@GeomagicDevice.positionDevice"/>
+    </Node>
+
+    <!-- Instrument node: identical structure to sir's scene -->
+    <Node name="Instrument">
+        <EulerImplicitSolver rayleighMass="0.1" rayleighStiffness="0.01"/>
+        <CGLinearSolver iterations="25" tolerance="1e-6" threshold="1e-20"/>
+        <MechanicalObject name="instrumentState" template="Rigid3d"
+                          tags="GeomagicDevice"
+                          position="105 50 -7  0 0 0 1"/>
+        <UniformMass name="mass" totalMass="1"/>
+        <LCPForceFeedback name="LCPFF1" activate="true"
+                          forceCoef="0.000000005" indice="0"/>
+        <RestShapeSpringsForceField name="rssf"
+                                    stiffness="1000000"
+                                    angularStiffness="1000000"
+                                    external_rest_shape="@../Omni/DOFs"
+                                    points="0"
+                                    external_points="0"/>
+        <UncoupledConstraintCorrection compliance="0.001   0.00003 0 0   0.00003 0   0.00003"/>
+
+        <Node name="CollisionModel">
+            <MeshOBJLoader filename="pinn_project/membrane/sphere_my.obj" name="loader"/>
+            <MeshTopology src="@loader"/>
+            <MechanicalObject src="@loader" name="instrumentCollisionState1"
+                              ry="-90" rz="-90"/>
+            <PointCollisionModel name="pcc1" group="0"
+                                 simulated="false" active="true" moving="true"/>
+            <RigidMapping name="mapping" input="@../instrumentState"
+                          output="@instrumentCollisionState1"/>
+        </Node>
+
+        <Node name="CollisionModel2">
+            <MeshOBJLoader filename="pinn_project/membrane/tool1.obj" name="loader"/>
+            <MeshTopology src="@loader"/>
+            <MechanicalObject src="@loader" name="instrumentCollisionState2"
+                              ry="-180" rz="-90" dz="10.7" dy="0.15"/>
+            <TriangleCollisionModel name="tcc2" group="0"
+                                    simulated="false" active="true"
+                                    moving="true" bothSide="true"/>
+            <PointCollisionModel name="pcc2" group="0"
+                                 simulated="false" active="true"/>
+            <RigidMapping name="mapping2" input="@../instrumentState"
+                          output="@instrumentCollisionState2"/>
+        </Node>
+
+    </Node>
+
+</Node>

@@ -311,13 +311,10 @@ std::array<float, 3> PINNPredictor::predictForce(
     for (int i = 0; i < N_OUT; ++i)
         Y_pred[i] = raw[i] * Y_std_[i] + Y_mean_[i];
 
-    // 9. Decode force — invert log1p compression
+    // 9. Decode force — invert log1p compression (R11 is force-only: N_OUT=3=N_FORCE)
     std::array<float, 3> force;
     for (int i = 0; i < N_FORCE; ++i)
         force[i] = expm1_signed(Y_pred[i]);
-
-    // 10. Store PINN's predicted deform for next tick (if FEM not ready)
-    decodeDeform(Y_pred + N_FORCE, pred_ddx_, pred_ddy_, pred_ddz_);
 
     return force;
 }
@@ -342,10 +339,12 @@ void PINNPredictor::findNeighbours(float tx, float ty, float tz, int* nb_out) co
 }
 
 // ── buildFeatureVector ────────────────────────────────────────────────────────
-// Must exactly match the ordering in train_pinn_contactweight.py (n_lags=8, the
-// sweep-confirmed sweet spot):
-//   dt_cum(N_LAGS) + dt_pred(1) + pos_vel(6) + contact(3) + tool_hist(9*N_LAGS)
-//   + nb_deform/stress/strain(60*N_LAGS each) + accel(3) = 190*N_LAGS+13 = 1533
+// Matches R10 (LiverDualAttnFlex) training layout from train_liver_pinn.py:
+//   Global (21): dt_cum(N_LAGS) + dt_pred(1) + pos_vel(6) + contact(3) + accel(3)
+//   Per-lag (N_LAGS × 189): tool(9) + nb_interleaved(9_feat × N_NB)
+//   Total: 21 + 8 × 189 = 21 + 1512 = 1533
+//
+// nb features per neighbour (n_nb_feat=9): ddx, ddy, ddz, sax, say, saz, rxx, ryy, rzz
 void PINNPredictor::buildFeatureVector(
     float* X,
     float tx, float ty, float tz,
@@ -356,75 +355,63 @@ void PINNPredictor::buildFeatureVector(
 {
     int idx = 0;
 
-    // --- dt_cum (5): rt[lag] - rt[lag5_base] for lag 1..5 ---
-    // rt_hist_[0]=lag1 (most recent), rt_hist_[4]=lag5 (oldest = base)
+    // --- Global section (21 features) ---
+
+    // dt_cum (N_LAGS=8): rt[lag] - rt[oldest_lag] for each lag
     double base_time = rt_hist_[N_LAGS - 1];
     for (int lag = 0; lag < N_LAGS; ++lag) {
         double dt = rt_hist_[lag] - base_time;
-        X[idx++] = (float)std::min(std::max(dt, 0.0), 0.15);
+        X[idx++] = (float)std::min(std::max(dt, 0.0), 5.0);
     }
 
-    // --- dt_pred (1): current_time - lag5_base ---
-    float dt_pred = (float)std::min(std::max(real_time - base_time, 0.0), 0.15);
-    X[idx++] = dt_pred;
+    // dt_pred (1): current_time - oldest_lag_time
+    X[idx++] = (float)std::min(std::max(real_time - base_time, 0.0), 5.0);
 
-    // --- current_pos_vel (6) ---
+    // current pos + vel (6)
     X[idx++] = tx;  X[idx++] = ty;  X[idx++] = tz;
     X[idx++] = tvx; X[idx++] = tvy; X[idx++] = tvz;
 
-    // --- contact_features (3) ---
+    // contact features (3)
     X[idx++] = min_dist;
     X[idx++] = delta_min_dist;
     X[idx++] = lag1_contact;
 
-    // --- tool_hist (45): lag1..5 × [x,y,z,vx,vy,vz,log_fx,log_fy,log_fz] ---
-    for (int lag = 0; lag < N_LAGS; ++lag) {
-        for (int k = 0; k < 9; ++k)
-            X[idx++] = tool_hist_[lag][k];
-    }
-
-    // --- nb_deform (300): lag1..5 × (ddx[nb×20] + ddy[nb×20] + ddz[nb×20]) ---
-    for (int lag = 0; lag < N_LAGS; ++lag) {
-        for (int n = 0; n < N_NB; ++n) X[idx++] = buf_ddx_[lag][nb[n]];
-        for (int n = 0; n < N_NB; ++n) X[idx++] = buf_ddy_[lag][nb[n]];
-        for (int n = 0; n < N_NB; ++n) X[idx++] = buf_ddz_[lag][nb[n]];
-    }
-
-    // --- nb_stress (300): lag1..5 × (sax[nb] + say[nb] + saz[nb]) ---
-    for (int lag = 0; lag < N_LAGS; ++lag) {
-        for (int n = 0; n < N_NB; ++n) X[idx++] = buf_sax_[lag][nb[n]];
-        for (int n = 0; n < N_NB; ++n) X[idx++] = buf_say_[lag][nb[n]];
-        for (int n = 0; n < N_NB; ++n) X[idx++] = buf_saz_[lag][nb[n]];
-    }
-
-    // --- nb_realstrain (300): lag1..5 × (rxx[nb] + ryy[nb] + rzz[nb]) ---
-    for (int lag = 0; lag < N_LAGS; ++lag) {
-        for (int n = 0; n < N_NB; ++n) X[idx++] = buf_rxx_[lag][nb[n]];
-        for (int n = 0; n < N_NB; ++n) X[idx++] = buf_ryy_[lag][nb[n]];
-        for (int n = 0; n < N_NB; ++n) X[idx++] = buf_rzz_[lag][nb[n]];
-    }
-
-    // --- acceleration (3): wide-baseline (lag1 vs lag3) velocity difference,
-    // matching training exactly: accel = (v[lag1] - v[lag3]) / (rt[lag1] - rt[lag3]),
-    // zero if that interval is degenerate (not enough real history yet). Adjacent-step
-    // differencing was deliberately avoided in training (amplifies sensor noise); this
-    // wider baseline must be replicated bit-for-bit or the feature means something
-    // different here than what the model learned.
+    // acceleration (3) — wide-baseline (lag0 vs lag2), same as training
     {
         const float dt_accel = (float)(rt_hist_[0] - rt_hist_[2]);
         float ax = 0.f, ay = 0.f, az = 0.f;
         if (dt_accel > 1e-4f) {
-            ax = (tool_hist_[0][3] - tool_hist_[2][3]) / dt_accel;
-            ay = (tool_hist_[0][4] - tool_hist_[2][4]) / dt_accel;
-            az = (tool_hist_[0][5] - tool_hist_[2][5]) / dt_accel;
+            ax = std::min(std::max((tool_hist_[0][3] - tool_hist_[2][3]) / dt_accel, -500.f), 500.f);
+            ay = std::min(std::max((tool_hist_[0][4] - tool_hist_[2][4]) / dt_accel, -500.f), 500.f);
+            az = std::min(std::max((tool_hist_[0][5] - tool_hist_[2][5]) / dt_accel, -500.f), 500.f);
         }
-        ax = std::min(std::max(ax, -500.f), 500.f);
-        ay = std::min(std::max(ay, -500.f), 500.f);
-        az = std::min(std::max(az, -500.f), 500.f);
         X[idx++] = ax; X[idx++] = ay; X[idx++] = az;
     }
+    // idx == 21 here
 
-    assert(idx == N_IN);  // must be exactly 1533 (190*N_LAGS+13, N_LAGS=8)
+    // --- Per-lag blocks (N_LAGS × lag_w = 8 × 189 = 1512) ---
+    // Each lag: tool(9) + per-neighbour interleaved(9_feat × N_NB)
+    // lag 0 = most recent (lag1 in 1-indexed), lag N_LAGS-1 = oldest
+    for (int lag = 0; lag < N_LAGS; ++lag) {
+        // tool features [x,y,z,vx,vy,vz,log_fx,log_fy,log_fz]
+        for (int k = 0; k < 9; ++k)
+            X[idx++] = tool_hist_[lag][k];
+
+        // neighbour features: interleaved per-neighbour, 9 features each
+        for (int n = 0; n < N_NB; ++n) {
+            X[idx++] = buf_ddx_[lag][nb[n]];
+            X[idx++] = buf_ddy_[lag][nb[n]];
+            X[idx++] = buf_ddz_[lag][nb[n]];
+            X[idx++] = buf_sax_[lag][nb[n]];
+            X[idx++] = buf_say_[lag][nb[n]];
+            X[idx++] = buf_saz_[lag][nb[n]];
+            X[idx++] = buf_rxx_[lag][nb[n]];
+            X[idx++] = buf_ryy_[lag][nb[n]];
+            X[idx++] = buf_rzz_[lag][nb[n]];
+        }
+    }
+
+    assert(idx == N_IN);  // 21 global + 8 × 189 per-lag = 1533
 }
 
 // ── shiftBuffers ──────────────────────────────────────────────────────────────

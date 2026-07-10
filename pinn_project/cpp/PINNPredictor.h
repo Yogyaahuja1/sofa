@@ -31,7 +31,7 @@ public:
                                               // (dt_cum(N_LAGS) + dt_pred(1) + pos_vel(6) +
                                               // contact(3) + tool_hist(9*N_LAGS) +
                                               // nb_deform/stress/strain(60*N_LAGS each) + accel(3))
-    static constexpr int N_OUT      = 537;   // model output dim (3 force + 534 deform)
+    static constexpr int N_OUT      = 3;     // R11 force-only output (fx, fy, fz)
     static constexpr int N_FORCE    = 3;
     static constexpr int N_DEFORM   = 534;   // 178 active verts × 3
     static constexpr int N_ACTIVE   = 178;   // N_V - 3 fixed

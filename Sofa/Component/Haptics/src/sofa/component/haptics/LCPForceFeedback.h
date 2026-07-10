@@ -143,6 +143,12 @@ public:
         return ft;
     }
 
+    // Returns the real LCP force computed in the haptic thread (always from
+    // the constraint solver, never overwritten by PINN output).
+    sofa::type::Vec3d getRealForce() const {
+        return m_realForceCache;
+    }
+
     /// Overide method to lock or unlock the force feedback computation. According to parameter, value == true (resp. false) will lock (resp. unlock) mutex @sa lockForce
     void setLock(bool value) override;
 
@@ -211,6 +217,8 @@ protected:
     // the replay trajectory. No clock arithmetic anywhere -> no drift possible.
     static constexpr int PINN_CALL_STEP_STRIDE = 3;
     int    m_pinnStepCounter {0};
+    bool   m_prevInContact {false}; // contact state at last PINN call; used to detect onset
+    int    m_noContactCount {0};    // consecutive no-contact PINN calls; debounces loss detection
     bool   m_pinnTimerSet {false};  // true after first predictForce call (for dt_pred base)
     // Wall-clock, not simulation time — training's real_time column (DataCollector.cpp)
     // came from std::chrono, varying with actual compute/device-polling overhead per step

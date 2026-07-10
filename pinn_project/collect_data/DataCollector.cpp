@@ -5,13 +5,19 @@
 #include <sofa/helper/system/FileSystem.h>
 #include <sstream>
 #include <cstdio>
+#include <cstdlib>
 
 namespace pinn
 {
 
+static std::string sofa_root_path(const char* rel) {
+    const char* env = std::getenv("SOFA_ROOT");
+    return std::string(env ? env : ".") + "/" + rel;
+}
+
 DataCollector::DataCollector()
     : d_outputFile(initData(&d_outputFile,
-                            std::string("/home/yogyaahuja/sofa/pinn_project/data/training_data.csv"),
+                            sofa_root_path("pinn_project/data/training_data.csv"),
                             "outputFile", "Path to output CSV file"))
     , d_collectEvery(initData(&d_collectEvery, 5,
                               "collectEvery", "Collect data every N sim steps"))
@@ -19,7 +25,7 @@ DataCollector::DataCollector()
                           "toolPath", "SOFA path to tool MechanicalObject"))
     , d_dumpAxbEvery(initData(&d_dumpAxbEvery, 0,
                               "dumpAxbEvery", "Dump solver RHS/solution every N steps (0=disabled)"))
-    , d_axbDir(initData(&d_axbDir, std::string("/home/yogyaahuja/sofa/pinn_project/data/ax_b"),
+    , d_axbDir(initData(&d_axbDir, sofa_root_path("pinn_project/data/ax_b"),
                         "axbDir", "Output directory for Ax=b dumps"))
 {
     this->f_listening.setValue(true);
@@ -304,10 +310,17 @@ void DataCollector::writeSample()
 
         if (m_lcpFF)
         {
+            // getRealForce() reads m_realForceCache — set by the haptic thread's
+            // doComputeForce() every cycle, always from real LCP (never PINN output).
+            toolForce = m_lcpFF->getRealForce();
+
+            // Use haptic timestamps only when they look valid
             auto hapticData = m_lcpFF->getForce();
-            toolForce = hapticData.force;
-            sim_time  = hapticData.sim_time;
-            real_time = std::chrono::duration<double>(hapticData.real_time - m_startRealTime).count();
+            if (hapticData.sim_time > 0)
+            {
+                sim_time  = hapticData.sim_time;
+                real_time = std::chrono::duration<double>(hapticData.real_time - m_startRealTime).count();
+            }
         }
     }
 
@@ -319,18 +332,27 @@ void DataCollector::writeSample()
     const auto& restPos    = m_liverDofs->read(sofa::core::ConstVecCoordId::restPosition())->getValue();
     const auto& vertexVels = m_liverDofs->read(sofa::core::ConstVecDerivId::velocity())->getValue();
 
-    if (toolForce.norm() < 0.01) { m_isRecording = false; }
-    else if (!m_isRecording)     { m_isRecording = true; m_sessionId++; }
+    // Contact proxy must be computed before session detection
+    for (int i = 0; i < m_nVertices && i < (int)freePos.size(); i++)
+    {
+        const sofa::type::Vec3d proxy = freePos[i] - curPos[i];
+        m_contactProxy[i] = proxy;
+    }
 
-    // Zero pre-allocated buffers (no heap alloc)
+    // Use contactProxy magnitude for contact detection — toolForce from haptic
+    // thread is unreliable (LCP constraint problem may not be populated yet).
+    double maxProxy = 0.0;
+    for (int i = 0; i < m_nVertices; i++)
+        maxProxy = std::max(maxProxy, m_contactProxy[i].norm());
+
+    if (maxProxy < 0.005) { m_isRecording = false; }
+    else if (!m_isRecording) { m_isRecording = true; m_sessionId++; }
+
+    // Zero other buffers (contactProxy already filled above)
     const sofa::type::Vec3d zero3(0,0,0);
-    std::fill(m_contactProxy.begin(), m_contactProxy.end(), zero3);
     std::fill(m_vertStress.begin(),   m_vertStress.end(),   zero3);
     std::fill(m_vertStrain.begin(),   m_vertStrain.end(),   zero3);
     std::fill(m_vertCount.begin(),    m_vertCount.end(),    0);
-
-    for (int i = 0; i < m_nVertices && i < (int)freePos.size(); i++)
-        m_contactProxy[i] = freePos[i] - curPos[i];
 
     if (!m_accStressInit) { m_accStress.assign(m_nVertices, zero3); m_accStressInit = true; }
     for (int i = 0; i < m_nVertices; i++)

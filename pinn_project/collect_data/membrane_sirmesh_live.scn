@@ -1,0 +1,136 @@
+<?xml version="1.0" ?>
+<Node name="root" dt="0.001" gravity="0 0 0">
+
+    <RequiredPlugin name="SofaCUDA"/>
+    <RequiredPlugin name="PINNDataCollector"/>
+    <RequiredPlugin name="Geomagic"/>
+    <RequiredPlugin name="Sofa.Component.AnimationLoop"/>
+    <RequiredPlugin name="Sofa.Component.Collision.Detection.Algorithm"/>
+    <RequiredPlugin name="Sofa.Component.Collision.Detection.Intersection"/>
+    <RequiredPlugin name="Sofa.Component.Collision.Geometry"/>
+    <RequiredPlugin name="Sofa.Component.Topology.Container.Constant"/>
+    <RequiredPlugin name="Sofa.Component.Collision.Response.Contact"/>
+    <RequiredPlugin name="Sofa.Component.Constraint.Lagrangian.Correction"/>
+    <RequiredPlugin name="Sofa.Component.Constraint.Lagrangian.Solver"/>
+    <RequiredPlugin name="Sofa.Component.Constraint.Projective"/>
+    <RequiredPlugin name="Sofa.Component.Controller"/>
+    <RequiredPlugin name="Sofa.Component.Haptics"/>
+    <RequiredPlugin name="Sofa.Component.IO.Mesh"/>
+    <RequiredPlugin name="Sofa.Component.LinearSolver.Iterative"/>
+    <RequiredPlugin name="Sofa.Component.Mapping.Linear"/>
+    <RequiredPlugin name="Sofa.Component.Mapping.NonLinear"/>
+    <RequiredPlugin name="Sofa.Component.Mass"/>
+    <RequiredPlugin name="Sofa.Component.ODESolver.Backward"/>
+    <RequiredPlugin name="Sofa.Component.SolidMechanics.FEM.Elastic"/>
+    <RequiredPlugin name="Sofa.Component.SolidMechanics.Spring"/>
+    <RequiredPlugin name="Sofa.Component.StateContainer"/>
+    <RequiredPlugin name="Sofa.Component.Topology.Container.Dynamic"/>
+    <RequiredPlugin name="Sofa.Component.Visual"/>
+    <RequiredPlugin name="Sofa.GL.Component.Rendering3D"/>
+    <VisualStyle displayFlags="showVisualModels showCollisionModels hideBehaviorModels hideMappings hideForceFields"/>
+    <DefaultVisualManagerLoop/>
+
+    <CollisionPipeline name="pipeline" depth="6"/>
+    <BruteForceBroadPhase/>
+    <BVHNarrowPhase/>
+    <!-- Same alarm/contact distances as liver scene — 0.05/0.01 was 10x too small -->
+    <LocalMinDistance name="Proximity" alarmDistance="0.6" contactDistance="0.35"/>
+    <DefaultContactManager name="Response" response="FrictionContactConstraint"/>
+    <FreeMotionAnimationLoop/>
+    <LCPConstraintSolver tolerance="0.001" maxIt="1000"/>
+
+    <!-- positionBase puts device neutral at Y=20, safely above membrane top (Y≈13) -->
+    <GeomagicDriver name="GeomagicDevice"
+                    deviceName="Default Device"
+                    scale="1"
+                    positionBase="0 0 0"
+                    orientationBase="0 0.707 0 -0.707"
+                    maxLinearSpeed="60"/>
+
+    <Node name="Tissue">
+        <MeshOBJLoader name="meshLoader"
+                       filename="pinn_project/membrane/membrane2.obj"
+                       scale="5" createSubelements="true"/>
+        <TriangleSetTopologyContainer name="Triangle_topo" src="@meshLoader"/>
+        <TriangleSetTopologyModifier name="Modifier"/>
+        <TriangleSetGeometryAlgorithms name="GeomAlgo" template="Vec3d"/>
+
+        <EulerImplicitSolver name="cg_odesolver" rayleighStiffness="0.1" rayleighMass="0.1" parallelODESolving="true"/>
+        <CGLinearSolver name="linearSolver" iterations="200" tolerance="1e-9" threshold="1e-9"/>
+
+        <!-- rotation+translation put membrane center at SOFA origin (device workspace) -->
+        <MechanicalObject name="tissue_dofs" template="Vec3d"
+                          src="@meshLoader"
+                          rotation="180 0 -180" translation="105 50 -13"/>
+
+        <UniformMass name="mass" totalMass="10.0"/>
+
+        <FixedConstraint mstate="@tissue_dofs"
+                         indices="512 513 2 514 3 1 0 4 518 9 521 520 12 13 10 15 11 17 18 14 21 25 5 28 29 30 31 32 33 34 546 38 1025 551 39 554 517 46 559 1027 560 561 563 564 565 55 56 57 58 59 569 1029 62 576 598 602 604 605 95 611 102 615 108 110 111 112 631 632 124 638 639 128 129 131 132 645 647 654 655 656 657 667 668 669 670 159 160 161 162 163 672 165 166 167 168 169 170 171 172 173 686 176 177 178 184 185 186 187 188 189 190 702 192 705 191 193 704 209 210 213 214 215 216 729 232 753 754 755 756 761 249 763 764 766 255 256 259 778 779 267 781 780 271 272 785 786 787 788 274 790 275 792 789 284 797 798 801 290 291 292 294 301 813 305 306 307 820 308 309 821 826 854 862 866 867 871 367 894 895 896 907 908 910 922 930 935 440 441 952 445 446 447 959 449 450 452 453 967 456 968 973 462 974 463 466 983 479 482 483 996 486 487 1000 1002 493 494 1006 496 497 1005 1007 1013 502 506 509 510 511"/>
+
+        <TriangularFEMForceField name="FEM" template="Vec3d"
+                                 youngModulus="600" poissonRatio="0.3" method="large"/>
+
+        <PrecomputedConstraintCorrection recompute="true"/>
+
+        <TriangleCollisionModel name="tcm" group="1" bothSide="true"/>
+        <LineCollisionModel group="1"/>
+        <PointCollisionModel group="1"/>
+
+        <!-- Visual: membrane shown as blue surface -->
+        <Node name="VisualModel">
+            <MeshOBJLoader name="visLoader"
+                           filename="pinn_project/membrane/membrane2.obj"
+                           scale="5"/>
+            <OglModel name="visual" src="@visLoader"
+                      rotation="180 0 -180" translation="105 50 -13"
+                      color="0.2 0.5 0.9 0.9" backFaceRendering="true"/>
+            <BarycentricMapping input="@../tissue_dofs" output="@visual"/>
+        </Node>
+
+        <MembraneDataCollector
+            outputFile="pinn_project/data/flat_surface_training_data.csv"
+            collectEvery="3"/>
+    </Node>
+
+    <!-- Omni: tracks device position each step via MechanicalStateController -->
+    <Node name="Omni">
+        <MechanicalObject template="Rigid3d" name="DOFs"
+                          position="@GeomagicDevice.positionDevice"/>
+        <MechanicalStateController template="Rigid3d"
+                                   listening="true" mainDirection="-1.0 0.0 0.0"/>
+    </Node>
+
+    <!-- Instrument: spring-coupled to Omni, same pattern as liver scene -->
+    <Node name="Instrument">
+        <EulerImplicitSolver rayleighMass="1.0" rayleighStiffness="0.01"/>
+        <CGLinearSolver iterations="25" tolerance="1e-10" threshold="1e-10"/>
+        <!-- Match positionBase so instrument starts above membrane (Y=20), not inside it -->
+        <MechanicalObject name="instrumentState" template="Rigid3d"
+                          position="0 20 0  0 0 0 1"/>
+        <UniformMass name="mass" totalMass="0.5"/>
+        <LCPForceFeedback name="LCPFF1" template="Rigid3d" activate="true" forceCoef="0.05" usePINN="false"/>
+        <UncoupledConstraintCorrection template="Rigid3d"/>
+        <RestShapeSpringsForceField name="rssf"
+                                    template="Rigid3d"
+                                    stiffness="5000"
+                                    angularStiffness="5000"
+                                    external_rest_shape="@../Omni/DOFs"
+                                    points="0"
+                                    external_points="0"/>
+
+        <!-- Orange sphere: visible at instrument position -->
+        <Node name="VisualModel">
+            <MeshOBJLoader filename="pinn_project/membrane/sphere_my.obj" name="visLoader"/>
+            <OglModel name="visual" src="@visLoader" color="1.0 0.4 0.1 1.0"/>
+            <RigidMapping input="@../instrumentState" output="@visual"/>
+        </Node>
+
+        <Node name="CollisionModel">
+            <MechanicalObject name="instrumentCollisionState1" template="Vec3d"/>
+            <SphereCollisionModel name="sc1" radius="1.0" group="0"/>
+            <RigidMapping name="mapping" input="@../instrumentState" output="@instrumentCollisionState1"/>
+        </Node>
+    </Node>
+
+</Node>

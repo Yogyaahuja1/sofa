@@ -22,20 +22,21 @@ import torch
 import sys, os
 SOFA_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'train'))
-from pinn_model import LagSequenceAttentionAccelVar
+from pinn_model import LiverDualAttnFlex
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--session-id', type=int, required=True)
+parser.add_argument('--session-id', type=int, nargs='+', required=True)
 args = parser.parse_args()
 
 N_LAGS = 8
 N_NB = 20
+N_NB_FEAT = 9   # deform(3) + accstress(3) + strain(3) — matches R10
 N_V = 181
 FIXED = [3, 39, 64]
 
 # ── Load the original recorded path (the interpolation reference) ──────────────
 df = pd.read_csv(f'{SOFA_ROOT}/pinn_project/data/training_data.csv')
-sess = df[df.session_id == args.session_id].sort_values('step').reset_index(drop=True)
+sess = df[df.session_id.isin(args.session_id)].sort_values(['session_id','step']).reset_index(drop=True)
 gaps = sess['step'].diff().abs()
 gap_idx = list(gaps[gaps > 50].index)
 if gap_idx:
@@ -118,8 +119,9 @@ for row in range(N_LAGS, n_calls):
     min_dist = d[nb[0]]
 
     base_rtime = interp_cache[row - N_LAGS][3]
-    dt_cum = np.array([np.clip(interp_cache[row-lag][3] - base_rtime, 0, 0.15) for lag in range(1, N_LAGS+1)], dtype=np.float32)
-    dt_pred = np.clip(interp_cache[row][3] - base_rtime, 0, 0.15)
+    # dt_cum: k=0=most recent lag, k=N_LAGS-1=oldest; clip matches training (5.0s)
+    dt_cum = np.array([np.clip(interp_cache[row-(k+1)][3] - base_rtime, 0, 5.0) for k in range(N_LAGS)], dtype=np.float32)
+    dt_pred = np.clip(interp_cache[row][3] - base_rtime, 0, 5.0)
 
     cur_pos, cur_vel = interp_cache[row][0], interp_cache[row][1]
     prev_pos = interp_cache[row-1][0] if row >= 1 else cur_pos
@@ -127,27 +129,28 @@ for row in range(N_LAGS, n_calls):
     prev_force_mag = np.linalg.norm(interp_cache[row-1][2])
     cf = np.array([min_dist, d_dist, float(prev_force_mag > 0.01)], dtype=np.float32)
 
-    th = []
-    for lag in range(1, N_LAGS + 1):
-        p, v, f, *_ = interp_cache[row - lag]
-        th.extend([p[0], p[1], p[2], v[0], v[1], v[2],
-                   np.sign(f[0])*np.log1p(abs(f[0])), np.sign(f[1])*np.log1p(abs(f[1])), np.sign(f[2])*np.log1p(abs(f[2]))])
-    th = np.array(th, dtype=np.float32)
-
-    df_f, sf_f, rf_f = [], [], []
-    for lag in range(1, N_LAGS + 1):
-        _, _, _, _, ddx, ddy, ddz, sax, say, saz, rxx, ryy, rzz, _ = interp_cache[row - lag]
-        df_f.extend([ddx[nb], ddy[nb], ddz[nb]])
-        sf_f.extend([sax[nb], say[nb], saz[nb]])
-        rf_f.extend([rxx[nb], ryy[nb], rzz[nb]])
-
-    src1, src3 = interp_cache[row-1], interp_cache[row-3]
+    # Accel in global section (lag0=most recent vs lag2)
+    src1, src3 = interp_cache[row-1], interp_cache[row-3] if row >= 3 else interp_cache[0]
     dt_a = src1[3] - src3[3]
     accel = ((src1[1] - src3[1]) / dt_a) if dt_a > 1e-4 else np.zeros(3)
     accel = np.clip(accel, -500.0, 500.0).astype(np.float32)
 
-    X = np.concatenate([dt_cum, [dt_pred], [cur_pos[0],cur_pos[1],cur_pos[2],cur_vel[0],cur_vel[1],cur_vel[2]],
-                         cf, th, np.concatenate(df_f), np.concatenate(sf_f), np.concatenate(rf_f), accel]).astype(np.float32)
+    # R10 layout: global(21) + per-lag-interleaved(8 × 189)
+    # Per-lag k=0..7 (k=0 = most recent = lag1): tool(9) + [ddx_j,ddy_j,ddz_j,sax_j,say_j,saz_j,rxx_j,ryy_j,rzz_j] × N_NB
+    lag_blocks = []
+    for k in range(N_LAGS):
+        p, v, f, _, ddx, ddy, ddz, sax, say, saz, rxx, ryy, rzz, _ = interp_cache[row - (k + 1)]
+        tool_k = [p[0], p[1], p[2], v[0], v[1], v[2],
+                  np.sign(f[0])*np.log1p(abs(f[0])), np.sign(f[1])*np.log1p(abs(f[1])), np.sign(f[2])*np.log1p(abs(f[2]))]
+        nb_k = []
+        for j in nb:
+            nb_k.extend([ddx[j], ddy[j], ddz[j], sax[j], say[j], saz[j], rxx[j], ryy[j], rzz[j]])
+        lag_blocks.extend(tool_k + nb_k)
+
+    X = np.concatenate([dt_cum, [dt_pred],
+                         [cur_pos[0], cur_pos[1], cur_pos[2], cur_vel[0], cur_vel[1], cur_vel[2]],
+                         cf, accel,
+                         lag_blocks]).astype(np.float32)
     X_list.append(X)
     true_force_list.append(interp_cache[row][2])
 
@@ -155,15 +158,17 @@ X_arr = np.stack(X_list)
 true_force = np.stack(true_force_list)
 print(f"Built {len(X_arr)} corrected feature vectors, dim={X_arr.shape[1]}")
 
-# ── Run the model ────────────────────────────────────────────────────────────
-ckpt = torch.load(f'{SOFA_ROOT}/pinn_project/train/tissue_pinn_contactweight_n8_beta5.0.pth', map_location='cpu', weights_only=False)
-X_mean = ckpt['X_mean'].numpy() if hasattr(ckpt['X_mean'], 'numpy') else np.array(ckpt['X_mean'])
-X_std  = ckpt['X_std'].numpy()  if hasattr(ckpt['X_std'],  'numpy') else np.array(ckpt['X_std'])
-Y_mean = ckpt['Y_mean'].numpy() if hasattr(ckpt['Y_mean'], 'numpy') else np.array(ckpt['Y_mean'])
-Y_std  = ckpt['Y_std'].numpy()  if hasattr(ckpt['Y_std'],  'numpy') else np.array(ckpt['Y_std'])
-model = LagSequenceAttentionAccelVar(n_output=ckpt['n_output'], n_inputs=ckpt['n_inputs'], n_lags=N_LAGS)
+# ── Run the model (R10 — LiverDualAttnFlex) ──────────────────────────────────
+ckpt = torch.load(f'{SOFA_ROOT}/pinn_project/train/liver_E1500_best.pth', map_location='cpu', weights_only=False)
+def to_np(v): return v.cpu().numpy() if hasattr(v, 'cpu') else np.array(v)
+X_mean = to_np(ckpt['X_mean'])
+X_std  = to_np(ckpt['X_std'])
+Y_mean = to_np(ckpt['Y_mean'])
+Y_std  = to_np(ckpt['Y_std'])
+model = LiverDualAttnFlex(ckpt['n_output'], ckpt['n_steps'], ckpt['n_neighbours'], ckpt['n_nb_feat'])
 model.load_state_dict(ckpt['model_state'])
 model.eval()
+print(f"R10 model loaded: n_inputs={ckpt['n_inputs']}  feature built: {X_arr.shape[1]}")
 
 X_norm = (X_arr - X_mean) / (X_std + 1e-8)
 with torch.no_grad():
@@ -198,10 +203,12 @@ ax.plot(steps, true_mag, 'b-o', markersize=3, label='True |F| (interpolated from
 ax.plot(steps, pred_mag, 'r-o', markersize=3, label='Corrected-input prediction |F|')
 ax.set_xlabel('Replay call index')
 ax.set_ylabel('|F| (N)')
-ax.set_title(f'Session {args.session_id}: corrected-input prediction vs true force  (Rel L2: {rel_l2*100:.1f}%)')
+sid_str = ','.join(map(str, args.session_id))
+ax.set_title(f'Sessions {sid_str}: corrected-input prediction vs true force  (Rel L2: {rel_l2*100:.1f}%)')
 ax.legend()
 ax.grid(alpha=0.3)
 plt.tight_layout()
-outpath = f'{SOFA_ROOT}/pinn_project/test/corrected_replay_session{args.session_id}.png'
+sid_str = '_'.join(map(str, args.session_id))
+outpath = f'{SOFA_ROOT}/pinn_project/test/corrected_replay_session{sid_str}.png'
 plt.savefig(outpath, dpi=150)
 print(f"Plot saved: {outpath}")

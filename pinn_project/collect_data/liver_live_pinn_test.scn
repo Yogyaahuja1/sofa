@@ -55,7 +55,7 @@
 
         <!-- GlobalSystemMatrixExporter disabled — synchronous 543×543 CSV write was costing fps
         <GlobalSystemMatrixExporter name="matrix_exporter"
-            filename="/home/yogyaahuja/sofa/pinn_project/data/ax_b/A"
+            filename="pinn_project/data/ax_b/A"
             format="csv"
             exportEveryNumberOfSteps="30"/>
         -->
@@ -72,13 +72,10 @@
         <LinearSolverConstraintCorrection/>
         <FixedConstraint indices="3 39 64 112 122 127"/>
 
-        <!-- Data collector — sits inside Liver node so it finds liverDofs automatically -->
-        <!-- Tool node is named "Instrument" with MechanicalObject "instrumentState" (Rigid3d) -->
-        <DataCollector
-            outputFile="/home/yogyaahuja/sofa/pinn_project/data/training_data.csv"
-            collectEvery="3"
-            dumpAxbEvery="0"
-            axbDir="/home/yogyaahuja/sofa/pinn_project/data/ax_b"/>
+        <!-- DataCollector removed from live test scene — keeping it here with usePINN=true
+             would write PINN's own predictions as "force" into training_data.csv,
+             silently contaminating the training data. Use liver_collection.scn for data
+             collection (usePINN=false there). -->
 
         <!-- FIX 1: Visu node — OglModel needs its own name, and src= points to the
              OBJ loader in this node, not the .msh loader from the parent -->
@@ -118,7 +115,7 @@
         <CGLinearSolver iterations="25" tolerance="1e-10" threshold="10e-10"/>
         <MechanicalObject name="instrumentState" template="Rigid3d" position="0 6 0  0 0 0 1"/>
         <UniformMass totalMass="0.5"/>
-        <LCPForceFeedback  name="LCPForceFeedback" template="Rigid3d"  activate="true" forceCoef="0.1" usePINN="true" liveComparisonLog="/home/yogyaahuja/sofa/pinn_project/data/live_pinn_vs_real.csv"/>
+        <LCPForceFeedback  name="LCPForceFeedback" template="Rigid3d"  activate="true" forceCoef="0.1" usePINN="true" liveComparisonLog="pinn_project/data/live_pinn_vs_real.csv"/>
         <UncoupledConstraintCorrection/>
 
         <Node name="VisualModel">

@@ -1,6 +1,7 @@
 <?xml version="1.0" ?>
 <Node name="root" dt="0.005" gravity="0 0 0">
 
+    <RequiredPlugin name="PINNDataCollector"/>
     <RequiredPlugin name="Geomagic"/>
     <RequiredPlugin name="Sofa.Component.AnimationLoop"/>
     <RequiredPlugin name="Sofa.Component.Collision.Detection.Algorithm"/>
@@ -48,8 +49,8 @@
         positionBase="0 0 0"
         orientationBase="0 0.707 0 -0.707"
         maxLinearSpeed="60"
-        replayFile="/home/yogyaahuja/sofa/pinn_project/data/test_path_liftgap.csv"
-        replayOutput="/home/yogyaahuja/sofa/pinn_project/data/replay_liftgap_reset.csv"/>
+        replayFile="pinn_project/data/auto_traj.csv"
+        replayOutput="/tmp/auto_replay_out.csv"/>
 
     <!-- ===== LIVER NODE ===== -->
     <Node name="Liver" gravity="0 0 0">
@@ -67,6 +68,16 @@
             youngModulus="1500"/>
         <LinearSolverConstraintCorrection/>
         <FixedConstraint indices="3 39 64 112 122 127"/>
+
+        <!-- Full-state dump of the GROUND TRUTH replay — same format as training_data.csv,
+             so the already-validated Python feature pipeline can be run on this EXACT
+             replayed trajectory, isolating whether the C++ implementation has a real bug
+             from whether this specific trajectory is just inherently hard for the model. -->
+        <DataCollector
+            outputFile="pinn_project/data/training_data.csv"
+            collectEvery="1"
+            dumpAxbEvery="0"
+            axbDir="pinn_project/data/ax_b"/>
 
         <Node name="Visu">
             <MeshOBJLoader name="objLoader" filename="mesh/liver-smooth.obj"/>
@@ -97,9 +108,9 @@
     <Node name="Instrument">
         <EulerImplicitSolver rebuildMatrixEvery="10" rayleighStiffness="0.01" rayleighMass="1.0"/>
         <CGLinearSolver iterations="25" tolerance="1e-10" threshold="10e-10"/>
-        <MechanicalObject name="instrumentState" template="Rigid3d" position="-1.928454 3.554816 1.377371  0 0 0 1"/>
+        <MechanicalObject name="instrumentState" template="Rigid3d" position="-1.270371 3.106339 -2.161702  0 0 0 1"/>
         <UniformMass totalMass="0.5"/>
-        <LCPForceFeedback name="LCPForceFeedback" template="Rigid3d" activate="true" forceCoef="0.1" usePINN="true" pinnResetOnContact="true"/>
+        <LCPForceFeedback name="LCPForceFeedback" template="Rigid3d" activate="true" forceCoef="0.1" usePINN="false"/>
         <UncoupledConstraintCorrection/>
 
         <Node name="VisualModel">

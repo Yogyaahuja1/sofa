@@ -50,8 +50,8 @@
         positionBase="0 0 0"
         orientationBase="0 0.707 0 -0.707"
         maxLinearSpeed="60"
-        replayFile="/home/yogyaahuja/sofa/pinn_project/data/test_path.csv"
-        replayOutput="/home/yogyaahuja/sofa/pinn_project/data/replay_pinn_livedevice.csv"
+        replayFile="pinn_project/data/test_path.csv"
+        replayOutput="pinn_project/data/replay_pinn_livedevice.csv"
         replayUseRealDevice="true"/>
 
     <!-- ===== LIVER NODE ===== -->

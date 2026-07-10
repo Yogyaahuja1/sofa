@@ -16,39 +16,36 @@ sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'train'))
 
 import torch
 import numpy as np
-from pinn_model import LagSequenceAttentionAccelVar
+from pinn_model import LiverDualAttnFlex
 
-FULL_PATH    = f'{SOFA_ROOT}/pinn_project/train/tissue_pinn_contactweight_n8_beta5.0.pth'
+# R11 — LiverDualAttnFlex force-only, 20.34% force_rel, best model so far
+FULL_PATH    = f'{SOFA_ROOT}/pinn_project/train/liver_R11_force_only.pth'
 VERTICES_NPY = f'{SOFA_ROOT}/pinn_project/data/liver_vertices.npy'
 OUT_DIR      = f'{SOFA_ROOT}/pinn_project/cpp'
 
 os.makedirs(OUT_DIR, exist_ok=True)
 
 # ── Load checkpoint ────────────────────────────────────────────────────────────
-# This file already holds the best-val-loss weights (training script reloads the
-# best checkpoint before saving), plus normalization stats — one file, no separate
-# best/final split needed.
-print("Loading checkpoint...")
+print("Loading R10 checkpoint...")
 full_ckpt = torch.load(FULL_PATH, map_location='cpu', weights_only=False)
-n_in  = full_ckpt['n_inputs']
-n_out = full_ckpt['n_output']
 
 def to_np(v):
-    return v.cpu().numpy() if hasattr(v, 'numpy') else np.array(v)
+    return v.cpu().numpy() if hasattr(v, 'cpu') else np.array(v)
 
-X_mean = to_np(full_ckpt['X_mean'])
-X_std  = to_np(full_ckpt['X_std'])
-Y_mean = to_np(full_ckpt['Y_mean'])
-Y_std  = to_np(full_ckpt['Y_std'])
-print(f"  n_inputs={n_in}, n_outputs={n_out}")
-print(f"  X_mean shape: {X_mean.shape}, Y_mean shape: {Y_mean.shape}")
+n_in     = full_ckpt['n_inputs']     # 1533
+n_out    = full_ckpt['n_output']     # 537
+n_lags   = full_ckpt['n_steps']      # 8
+n_nb     = full_ckpt['n_neighbours'] # 20
+n_nb_feat= full_ckpt['n_nb_feat']    # 9
+X_mean   = to_np(full_ckpt['X_mean'])
+X_std    = to_np(full_ckpt['X_std'])
+Y_mean   = to_np(full_ckpt['Y_mean'])
+Y_std    = to_np(full_ckpt['Y_std'])
+print(f"  arch={full_ckpt['arch']}  n_inputs={n_in}  n_outputs={n_out}")
+print(f"  n_lags={n_lags}  K={n_nb}  n_nb_feat={n_nb_feat}")
 
-model_state = full_ckpt['model_state']
-n_lags = full_ckpt['n_lags']
-print(f"  n_lags={n_lags}")
-
-model = LagSequenceAttentionAccelVar(n_output=n_out, n_inputs=n_in, n_lags=n_lags)
-model.load_state_dict(model_state)
+model = LiverDualAttnFlex(n_out, n_lags, n_nb, n_nb_feat)
+model.load_state_dict(full_ckpt['model_state'])
 model.eval()
 
 # ── Export TorchScript ─────────────────────────────────────────────────────────
