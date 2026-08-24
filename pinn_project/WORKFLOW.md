@@ -19,11 +19,24 @@ The targets below were measured for E=1500 — other models will have different 
 
 Runs the same fixed trajectory twice — once with FEM, once with PINN — and compares forces.
 
-**Step 1** — Run FEM ground truth scene (only needed once, result already saved):
+**Step 0** — Pick the fixed trajectory (only needed once per test path; skip if
+`data/test_path.csv` from a previous run is still the one you want):
+```bash
+cd pinn_project/test
+python3 extract_test_path.py --session-id <id>   # -> data/test_path.csv
 ```
-SOFA → open  pinn_project/collect_data/liver_auto_collect.scn
+See "Picking a fair `--session-id`" in [README.md](README.md) — it matters more
+than it looks.
+
+**Step 1** — Run FEM ground truth scene:
+```
+SOFA → open  pinn_project/test/liver_replay_groundtruth.scn
 ```
 Outputs: `data/replay_groundtruth.csv`
+
+(Not `collect_data/liver_auto_collect.scn` — that scene replays a different,
+fixed `auto_traj.csv` for scripted training-data collection and does not write
+`replay_groundtruth.csv`.)
 
 **Step 2** — Run PINN replay scene:
 ```
@@ -92,8 +105,11 @@ Auto-saves as `liver_E1500_v1.pth`, `liver_E1500_v2.pth`, ... (increments automa
 Training data: `data/training_data.csv` (auto-detected, no flag needed).
 
 ### Step 3 — Export to C++
+`export_for_cpp.py` has no `--model` flag — edit its hardcoded `FULL_PATH` (near
+the top of the script) to point at `pinn_project/train/liver_E1500_v1.pth` (or
+whichever checkpoint you just trained), then:
 ```bash
-python3 pinn_project/test/export_for_cpp.py --model pinn_project/train/liver_E1500_v1.pth
+python3 pinn_project/test/export_for_cpp.py
 ```
 Updates `cpp/pinn_model_traced.pt` and `cpp/normalization_stats.csv`.
 
@@ -122,8 +138,11 @@ Auto-saves as `liver_Egen_v1.pth`, `liver_Egen_v2.pth`, ...
 The `--use-youngs` flag selects the E-gen CSV and adds log(E/1000) as a feature.
 
 ### Step 3 — Export to C++
+Edit `export_for_cpp.py`'s hardcoded `FULL_PATH` to point at
+`pinn_project/train/liver_Egen_v5.pth` (or whichever checkpoint you just
+trained — there's no `--model` flag), then:
 ```bash
-python3 pinn_project/test/export_for_cpp.py --model pinn_project/train/liver_Egen_v5.pth
+python3 pinn_project/test/export_for_cpp.py
 ```
 
 ### Step 4 — Run deployment tests
@@ -185,8 +204,11 @@ python3 train_liver_pinn.py --var-window 1.0 --max-rows 80000
 > Training itself is fast — model forward pass is fully vectorised.
 
 ### Step 3 — Export to C++
+Edit `export_for_cpp.py`'s hardcoded `FULL_PATH` to point at
+`pinn_project/train/liver_E1500_vw1p0s_v1.pth` (or whichever checkpoint you
+just trained — there's no `--model` flag), then:
 ```bash
-python3 pinn_project/test/export_for_cpp.py --model pinn_project/train/liver_E1500_vw1p0s_v1.pth
+python3 pinn_project/test/export_for_cpp.py
 ```
 
 ### Step 4 — Run deployment tests

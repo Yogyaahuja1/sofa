@@ -11,58 +11,90 @@ as the repo location — substitute wherever you actually cloned it. Run
 source/scene files will match your real path automatically; only this prose
 documentation keeps the original literal paths as illustrative examples.
 
+**See also [WORKFLOW.md](WORKFLOW.md)** for the concrete step-by-step commands
+for each of the 4 training workflows (liver E=1500, liver E-generalised,
+membrane, liver variable-window) and the 3 deployment tests — this README
+covers directory layout, one-time build setup, and the underlying mechanics;
+WORKFLOW.md is the copy-pasteable command reference. Keep both in sync when
+either changes — this file previously drifted out of date after a cleanup
+that renamed/removed several of the files below without updating the prose.
+
 ## Directory structure
 
 ```
 pinn_project/
 ├── collect_data/      C++ SOFA plugin (PINNDataCollector) used to record training data
-│   ├── DataCollector.cpp/.h    records tool position/velocity/force + per-vertex
-│   │                            deformation/stress/strain into training_data.csv
-│   ├── liver_collection.scn    scene used to actually collect data (real device)
-│   └── build/                  this plugin's own CMake build (separate from main SOFA build)
+│   ├── DataCollector.cpp/.h          records tool position/velocity/force + per-vertex
+│   │                                  deformation/stress/strain into training_data.csv
+│   ├── MembraneDataCollector.cpp/.h  same idea, for the flat-membrane workflow ->
+│   │                                  data/flat_surface_training_data.csv
+│   ├── liver_collection.scn          collect liver training data (real device)
+│   ├── liver_auto_collect.scn        collect liver training data via a scripted,
+│   │                                  fixed replay path (data/auto_traj.csv) instead
+│   │                                  of a live device — usePINN=false, appends to
+│   │                                  training_data.csv same as liver_collection.scn
+│   ├── liver_live_pinn_test.scn      Deployment Test 3: live device, PINN driving
+│   │                                  force in real time -> data/live_pinn_vs_real.csv
+│   ├── membrane_sirmesh_collect.scn / membrane_sirmesh_live.scn   membrane equivalents
+│   │                                  of collection / live test
+│   └── build/                        this plugin's own CMake build (separate from
+│                                       main SOFA build)
 │
-├── data/               all CSV/NPY data — see "Where results are stored" below
+├── data/               all CSV/NPY data, gitignored — see "Where results are stored"
+│                        below. Nothing under here is committed, so a fresh clone has
+│                        NONE of it: training_data.csv, auto_traj.csv, test_path.csv,
+│                        liver_vertices.npy etc. must all be (re)generated or copied
+│                        in before training/testing will run — see the per-file notes
+│                        in "Where results are stored".
 │
 ├── train/              Python training scripts (offline, not part of the C++ build)
-│   ├── pinn_model.py            all model architecture classes (see below)
-│   ├── train_pinn_seqattn_accel.py   current best/recommended model — trains
-│   │                                  LagSequenceAttentionAccel, saves
-│   │                                  tissue_pinn_seqattn_accel.pth
-│   └── train_pinn_*.py          other architectures tried (baseline U-Net, Huber
-│                                  loss variant, dual-attention, etc.) — kept for
-│                                  comparison, not currently recommended
+│   ├── pinn_model.py            liver model architectures: LiverSeqAttnFlex,
+│   │                             LiverDualAttnFlex (current default/best), and
+│   │                             LiverDualAttnVarLen (variable-window history)
+│   ├── train_liver_pinn.py      single training script for all liver workflows —
+│   │                             flags select architecture/features (--arch,
+│   │                             --var-window, --use-youngs, etc., see WORKFLOW.md)
+│   ├── membrane_pinn_model.py   membrane model architecture
+│   ├── train_membrane_pinn.py   training script for the membrane workflow
+│   └── run_queue.sh             queue several training runs back-to-back (see
+│                                 WORKFLOW.md's "Queue multiple training runs")
 │
 ├── cpp/                Files actually loaded by the deployed C++ predictor
 │   ├── PINNPredictor.cpp/.h     real-time TorchScript inference engine — builds the
-│   │                            963-dim feature vector, maintains 5-lag rolling
-│   │                            buffers, runs the model, decodes force + deformation
+│   │                            feature vector, maintains rolling history buffers,
+│   │                            runs the model, decodes force + deformation
 │   ├── pinn_model_traced.pt     exported TorchScript model (output of export_for_cpp.py)
 │   ├── normalization_stats.csv  X/Y mean+std, read by PINNPredictor at init
 │   └── liver_vertices.csv       rest-pose vertex positions, read by PINNPredictor
 │
 └── test/               Everything used to validate / deploy-test the model
     ├── export_for_cpp.py             run after training: traces the model to
-    │                                  TorchScript and writes the 3 files in cpp/ above
+    │                                  TorchScript and writes the 3 files in cpp/ above.
+    │                                  NOTE: currently has no --model flag — it loads a
+    │                                  hardcoded checkpoint path (FULL_PATH near the top
+    │                                  of the script); edit that line to point at your
+    │                                  new checkpoint before running
     ├── extract_test_path.py          pulls one recorded touch episode out of
     │                                  training_data.csv as a fixed replay trajectory
-    │                                  -> data/test_path.csv
-    ├── liver_replay_groundtruth.scn  replays test_path.csv with usePINN=false
-    │                                  (real FEM physics) -> data/replay_groundtruth.csv
-    ├── liver_replay_pinn.scn         replays the SAME path with usePINN=true
-    │                                  (PINN drives force) -> data/replay_pinn.csv
-    ├── liver_replay_pinn_livedevice.scn   same as above but driven through the REAL
-    │                                       haptic device's hardware thread instead of
-    │                                       a scripted batch loop (needs a connected,
-    │                                       calibrated device)
-    ├── compare_replay.py             the main deployment-test metric: loads the two
-    │                                  replay CSVs above and computes relative-L2 /
-    │                                  MAE between PINN and ground truth
-    ├── deployment_distance_plot.py   plots PINN vs ground truth force against
-    │                                  cumulative distance travelled (full trajectory
-    │                                  + a zoomed highest-activity window)
-    └── predict_session.py            runs the Python-side (non-C++) model directly
-                                       on a recorded session — used to separate "is the
-                                       model wrong" from "is the C++ deployment wrong"
+    │                                  -> data/test_path.csv (+ data/initial_deform.csv
+    │                                  if the episode doesn't start from rest)
+    ├── liver_replay_groundtruth.scn  Deployment Test 1, half 1: replays test_path.csv
+    │                                  with usePINN=false (real FEM physics)
+    │                                  -> data/replay_groundtruth.csv
+    ├── liver_replay_pinn.scn         Deployment Test 1, half 2: replays the SAME path
+    │                                  with usePINN=true -> data/replay_pinn.csv
+    ├── liver_replay_pinn_livedevice.scn   same comparison as liver_replay_pinn.scn but
+    │                                       driven through the REAL haptic device's
+    │                                       hardware thread instead of a scripted batch
+    │                                       loop (needs a connected, calibrated device)
+    ├── compare_replay.py             Deployment Test 1's metric: loads the two replay
+    │                                  CSVs above and computes relative-L2 / MAE between
+    │                                  PINN and ground truth -> data/replay_comparison.png
+    ├── predict_corrected_replay.py   Deployment Test 2: rebuilds the model's input from
+    │                                  a real recording at the replay's actual positions
+    │                                  -> test/corrected_replay_session<id>.png
+    └── compare_live.py               Deployment Test 3's metric: compares PINN vs real
+                                       LCP force from the live run -> test/live_comparison.png
 ```
 
 ## Building
@@ -255,10 +287,12 @@ release-then-repoke). Don't skip this:
 ### 2. Train a model
 ```bash
 cd /home/yogyaahuja/sofa/pinn_project/train
-python3 train_pinn_seqattn_accel.py
+python3 train_liver_pinn.py
 ```
-Saves `tissue_pinn_seqattn_accel.pth` (and `..._best.pth`, the best-val-loss
-checkpoint) into `train/`.
+Auto-saves as `liver_E1500_v1.pth`, `liver_E1500_v2.pth`, ... (increments
+automatically each run). This is the fixed-stiffness (E=1500) workflow; see
+[WORKFLOW.md](WORKFLOW.md) for the E-generalised, variable-window, and membrane
+(`train_membrane_pinn.py`) variants and their flags.
 
 ### 3. Export the trained model for C++
 ```bash
@@ -266,11 +300,14 @@ cd /home/yogyaahuja/sofa/pinn_project/test
 python3 export_for_cpp.py
 ```
 Writes `pinn_model_traced.pt`, `normalization_stats.csv`, `liver_vertices.csv` into
-`cpp/`. No rebuild needed — the model is loaded at runtime, not compiled in — but
-**you must re-run this export after every training run**, including ones that don't
-change the architecture. `runSofa` picks up whatever is currently sitting in `cpp/`
-with no warning if it's stale, so a forgotten export silently deployment-tests the
-wrong (old) model.
+`cpp/`. **This script does not currently take a `--model` argument** — it loads a
+hardcoded checkpoint path (`FULL_PATH` near the top of `export_for_cpp.py`); edit
+that line to point at the checkpoint you just trained before running it. No rebuild
+needed — the model is loaded at runtime, not compiled in — but **you must re-run
+this export after every training run**, including ones that don't change the
+architecture. `runSofa` picks up whatever is currently sitting in `cpp/` with no
+warning if it's stale, so a forgotten (or mis-pointed) export silently
+deployment-tests the wrong model.
 
 ### 4. Run the deployment test (scripted, no device needed)
 ```bash
@@ -280,8 +317,13 @@ rm -f ../data/replay_groundtruth.csv ../data/replay_pinn.csv
 /home/yogyaahuja/sofa/build/bin/runSofa -g batch -n 600 liver_replay_groundtruth.scn
 /home/yogyaahuja/sofa/build/bin/runSofa -g batch -n 600 liver_replay_pinn.scn
 python3 compare_replay.py                 # prints the Rel-L2/MAE deployment-test numbers
-python3 deployment_distance_plot.py       # writes the full + zoomed comparison plots
+                                           # and writes data/replay_comparison.png
 ```
+`extract_test_path.py` reads `data/training_data.csv`, so you need at least one
+collection run (step 1) done first. Both `.scn` files above must stay physically
+identical to `liver_collection.scn` (same `FixedConstraint` indices, `youngModulus`,
+solver settings) — see the data-quality checklist in step 1; a mismatch here is a
+silent, previously-confirmed source of bad deployment-test numbers.
 Pick `-n` generously — it must be large enough for the scripted replay to finish
 advancing through every row of `test_path.csv` (check the `[REPLAY] FINISHED` log line).
 
@@ -319,18 +361,27 @@ how long each row is held, default ~0.118s to match the original recording's pac
 
 ## Where results are stored
 
+All of `data/` is gitignored (see `pinn_project/data/` in `.gitignore`) — none of
+these survive a fresh clone. The ones marked **(seed)** have no generator script
+currently in this repo; they must already exist on your machine from before, or
+be recreated/copied in some other way before their dependent step will run.
+
 | File | What it is |
 |---|---|
 | `data/training_data.csv` | All recorded training data (appends across collection runs) |
-| `data/test_path.csv` | The one recorded episode currently selected for deployment testing |
-| `data/replay_groundtruth.csv` | Ground-truth force log from the `usePINN=false` replay |
-| `data/replay_pinn.csv` | PINN-predicted force log from the `usePINN=true` replay |
-| `data/replay_pinn_livedevice.csv` | Same, but from the live-device replay |
-| `data/liver_vertices.npy` | Rest-pose mesh vertex positions (Python-side copy) |
-| `train/tissue_pinn_seqattn_accel.pth` | Current best trained model checkpoint |
-| `test/force_comparison.png` | Python-side (non-C++) prediction vs ground truth |
-| `test/replay_comparison.png` | `compare_replay.py`'s plot (PINN vs GT, time-based) |
-| `test/deployment_distance_full.png` / `..._zoom.png` | Distance-based deployment plots |
+| `data/auto_traj.csv` **(seed)** | Fixed replay path used by `liver_auto_collect.scn` for scripted (no-device) data collection |
+| `data/liver_vertices.npy` **(seed)** | Rest-pose mesh vertex positions — read by `train_liver_pinn.py`, `export_for_cpp.py`, `predict_corrected_replay.py` |
+| `data/test_path.csv` | The one recorded episode currently selected for deployment testing — regenerated by `extract_test_path.py` from `training_data.csv` |
+| `data/initial_deform.csv` | Residual deformation at the start of the episode above, from `extract_test_path.py` (only written when the episode doesn't start at rest) |
+| `data/replay_groundtruth.csv` | Ground-truth force log from `liver_replay_groundtruth.scn` (`usePINN=false`) |
+| `data/replay_pinn.csv` | PINN-predicted force log from `liver_replay_pinn.scn` (`usePINN=true`) |
+| `data/replay_pinn_livedevice.csv` | Same, but from the live-device replay (`liver_replay_pinn_livedevice.scn`) |
+| `data/live_pinn_vs_real.csv` | Live PINN-vs-real force log from `liver_live_pinn_test.scn` (Deployment Test 3) |
+| `data/replay_comparison.png` | `compare_replay.py`'s plot (PINN vs GT, time-based) |
+| `train/liver_E1500_v*.pth`, `liver_Egen_v*.pth`, `liver_E1500_vw1p0s_v*.pth` | Trained liver checkpoints (auto-incrementing per run — see WORKFLOW.md) |
+| `train/membrane_v*.pth` | Trained membrane checkpoints |
+| `test/corrected_replay_session<id>.png` | `predict_corrected_replay.py`'s plot (Deployment Test 2) |
+| `test/live_comparison.png` | `compare_live.py`'s plot (Deployment Test 3) |
 
 ## What calculates what (the parts that matter most)
 
